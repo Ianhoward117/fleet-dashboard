@@ -1,0 +1,18 @@
+{
+  "name": "fleet-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Shower Stream Fleet & Ops Dashboard - internal fleet health and triage tool",
+  "scripts": {
+    "build": "node build.js",
+    "fetch": "node fetch.js",
+    "normalize": "node normalize.js",
+    "render": "node render.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "xlsx": "^0.18.5"
+  }
+}
