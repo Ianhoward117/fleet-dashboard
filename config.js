@@ -89,7 +89,7 @@ const THRESHOLDS = {
    * Buckets are evaluated in order; `maxDays: null` means "no upper bound".
    */
   heartbeatAge: {
-    confirmed: false, // PROPOSED - awaiting confirmation
+    confirmed: true, // confirmed by Ian, 2026-08-11
     buckets: [
       { key: 'fresh', label: '< 2 days', maxDays: 2, tone: 'good' },
       { key: 'aging', label: '2-7 days', maxDays: 7, tone: 'warn' },
@@ -104,7 +104,7 @@ const THRESHOLDS = {
    * py_export_heartbeatstatus), in days. Drives the freshness badge.
    */
   snapshotFreshness: {
-    confirmed: false, // PROPOSED - awaiting confirmation
+    confirmed: true, // mirrors the confirmed heartbeatAge cutoffs
     buckets: [
       { key: 'current', label: 'Current', maxDays: 2, tone: 'good' },
       { key: 'aging', label: 'Aging', maxDays: 7, tone: 'warn' },
@@ -113,19 +113,20 @@ const THRESHOLDS = {
   },
 
   /**
-   * Battery voltage cutoffs, in volts.
+   * Battery voltage cutoffs, in volts. Supplied by Ian on 2026-08-11.
    *
-   * DELIBERATELY UNSET. Battery chemistry has not been confirmed, and
-   * guessing a cutoff here would put invented engineering on an ops page.
-   * Until `confirmed` is true the dashboard shows raw voltages and reports
-   * the observed distribution instead of classifying anything as "low".
+   *   >= 3.6        healthy
+   *   3.2 .. < 3.6  marginal
+   *   < 3.2         critical
    *
-   * To activate: fill in the two cutoffs and flip `confirmed` to true.
+   * If `confirmed` is ever set back to false, the dashboard stops
+   * classifying batteries and shows raw voltages with an "unconfirmed"
+   * marker instead of inventing a cutoff.
    */
   batteryVoltage: {
-    confirmed: false, // UNCONFIRMED - ask engineering before trusting
-    okAbove: null, // volts at or above this are healthy
-    warnAbove: null, // volts at or above this are marginal; below is critical
+    confirmed: true, // confirmed by Ian, 2026-08-11
+    okAbove: 3.6, // volts at or above this are healthy
+    warnAbove: 3.2, // volts at or above this are marginal; below is critical
   },
 };
 
