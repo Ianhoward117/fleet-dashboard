@@ -92,13 +92,32 @@ const round = (n, p = 2) => (n === null || n === undefined ? null : Math.round(n
 // Sheet helpers
 // ---------------------------------------------------------------------------
 
-function readWorkbook(key) {
+function readWorkbook(key, requiredSheets = []) {
   const file = path.join(RAW_DIR, `${key}.xlsx`);
   if (!fs.existsSync(file)) {
     throw new Error(`NORMALIZE FAILED: missing ${file}\n  Run fetch.js first (or let build.js do it).`);
   }
-  return XLSX.readFile(file, { cellDates: true });
+  let wb;
+  try {
+    wb = XLSX.readFile(file, { cellDates: true });
+  } catch (err) {
+    throw new Error(`NORMALIZE FAILED: ${file} could not be parsed as a workbook.\n  ${err.message}`);
+  }
+  // A corrupt or truncated file can parse into an empty workbook rather than
+  // throwing, so check for the sheets we actually depend on.
+  const missing = requiredSheets.filter((s) => !wb.SheetNames.includes(s));
+  if (missing.length || wb.SheetNames.length === 0) {
+    throw new Error(
+      `NORMALIZE FAILED: ${file} is not a usable workbook.\n` +
+        `  missing sheet(s): ${missing.length ? missing.map((m) => JSON.stringify(m)).join(', ') : '(workbook has no sheets at all)'}\n` +
+        `  sheets present: ${wb.SheetNames.length ? wb.SheetNames.map((s) => JSON.stringify(s)).join(', ') : '(none)'}\n` +
+        `  Delete data/raw/ and re-run fetch.js to pull a clean copy.`
+    );
+  }
+  return wb;
 }
+
+const WO_SHEETS = ['Room Status', 'py_export_batterystatus', 'py_export_heartbeatstatus'];
 
 const sheetRows = (wb, name) =>
   XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: null, raw: true });
@@ -303,7 +322,8 @@ function readRegistry(wb, tabName) {
 // ---------------------------------------------------------------------------
 
 function normalize() {
-  const registryWb = readWorkbook('registry');
+  const registryTabs = PROPERTIES.filter((p) => p.registryTab).map((p) => p.registryTab);
+  const registryWb = readWorkbook('registry', registryTabs);
   const builtAt = new Date();
 
   const properties = [];
@@ -316,7 +336,7 @@ function normalize() {
   const notes = [];
 
   for (const prop of PROPERTIES) {
-    const wb = readWorkbook(prop.sheetKey);
+    const wb = readWorkbook(prop.sheetKey, WO_SHEETS);
     const rs = readRoomStatus(wb);
     const hb = readHeartbeatExport(wb);
     const bat = readBatteryExport(wb);
