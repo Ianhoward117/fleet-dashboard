@@ -8,7 +8,8 @@ The site is **public but unlisted** — `noindex, nofollow`, an unguessable
 hostname, no login. Anyone with the link can read it, so treat the link the
 way you would treat the sheets themselves.
 
-- **Live site:** <!-- NETLIFY_URL -->_(filled in once Netlify is connected)_
+- **Live site:** <https://ss-fleet-rxsm.netlify.app>
+- **Repository:** <https://github.com/Ianhoward117/fleet-dashboard> (private)
 - **Rebuilds:** automatically every morning, plus on every push to `main`
 
 ---
