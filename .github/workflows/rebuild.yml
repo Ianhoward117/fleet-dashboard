@@ -1,0 +1,49 @@
+name: daily-refresh
+
+# Nudges Netlify to rebuild, which re-fetches all five Google Sheets and
+# republishes the dashboard. The build itself runs on Netlify, not here -
+# this workflow only pokes the build hook.
+#
+# 11:00 UTC is 06:00 CDT / 05:00 CST, so the refresh lands before the
+# working day in Austin all year round without needing a DST-aware schedule.
+
+on:
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch: # lets you force a refresh from the Actions tab
+
+# The job needs no access to the repository itself.
+permissions: {}
+
+jobs:
+  trigger:
+    name: Trigger Netlify build
+    runs-on: ubuntu-latest
+    steps:
+      - name: POST the Netlify build hook
+        env:
+          HOOK_URL: ${{ secrets.NETLIFY_BUILD_HOOK }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${HOOK_URL:-}" ]; then
+            echo "::error::NETLIFY_BUILD_HOOK is not set. Add it under" \
+                 "Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+          # Only the status code is captured; the hook URL is never echoed.
+          status=$(curl --silent --show-error --fail-with-body \
+                        --request POST --data '{}' \
+                        --output /dev/null --write-out '%{http_code}' \
+                        "$HOOK_URL") || true
+
+          echo "Netlify responded with HTTP $status"
+
+          case "$status" in
+            2*) echo "Build triggered. Watch it in the Netlify deploys tab." ;;
+            "") echo "::error::No response from Netlify."; exit 1 ;;
+            *)  echo "::error::Build hook returned HTTP $status. If this is 404," \
+                     "the hook was deleted or the secret holds a stale URL."
+                exit 1 ;;
+          esac
