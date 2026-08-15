@@ -1,0 +1,26 @@
+# Netlify build configuration.
+#
+# These settings live here rather than in the Netlify UI so that they are
+# versioned, reviewable, and survive the site being recreated. netlify.toml
+# takes precedence over the dashboard, so this file is the single source of
+# truth for how the site builds.
+
+[build]
+  # Orchestrates fetch -> normalize -> render. Netlify installs the
+  # package.json dependencies before this runs.
+  command = "node build.js"
+
+  # render.js writes the single self-contained page here.
+  publish = "dist"
+
+[build.environment]
+  # Matches local development. The pipeline needs Node 18+ for global fetch().
+  NODE_VERSION = "24"
+
+# The page is public but unlisted. template.html carries a noindex meta tag;
+# this header enforces the same thing at the HTTP layer, which also covers
+# crawlers that fetch without parsing the HTML.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Robots-Tag = "noindex, nofollow"
