@@ -1,0 +1,719 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Shower Stream - Fleet &amp; Ops</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --ink: #16191d;
+    --ink-soft: #5b6570;
+    --ink-faint: #8a939d;
+    --line: #dfe3e8;
+    --line-soft: #eceff2;
+    --accent: #1f5fa9;
+    --good-bg: #e3f5e9; --good-fg: #14622f; --good-line: #a9dcbb;
+    --warn-bg: #fdf1d8; --warn-fg: #7a5210; --warn-line: #efcf8a;
+    --bad-bg:  #fce6e6; --bad-fg:  #8f2020; --bad-line:  #eeb0b0;
+    --flat-bg: #eceff2; --flat-fg: #5b6570; --flat-line: #d8dde2;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171a;
+      --panel: #1c2024;
+      --ink: #e8ebee;
+      --ink-soft: #a4aeb8;
+      --ink-faint: #78828c;
+      --line: #2e343a;
+      --line-soft: #24292e;
+      --accent: #6aa6e8;
+      --good-bg: #16301f; --good-fg: #7fd3a0; --good-line: #2c5c3c;
+      --warn-bg: #33280f; --warn-fg: #e8bf72; --warn-line: #5e4a1c;
+      --bad-bg:  #351a1a; --bad-fg:  #f0a0a0; --bad-line:  #62312f;
+      --flat-bg: #24292e; --flat-fg: #a4aeb8; --flat-line: #333a41;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  h1, h2, h3 { margin: 0; font-weight: 600; }
+
+  /* ---------- header ---------- */
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    padding: 12px 16px 10px;
+    position: sticky; top: 0; z-index: 20;
+  }
+  .hd-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  h1 { font-size: 16px; letter-spacing: -0.01em; }
+  h1 .sub { color: var(--ink-faint); font-weight: 400; }
+  .built { margin-left: auto; font-size: 12px; color: var(--ink-soft); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 9px; }
+  .chip {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    font-size: 11.5px; padding: 3px 8px; border-radius: 999px;
+    border: 1px solid var(--flat-line); background: var(--flat-bg); color: var(--flat-fg);
+    white-space: nowrap;
+  }
+  .chip b { font-weight: 600; }
+  .chip .age { font-variant-numeric: tabular-nums; opacity: .85; }
+  .tone-good { background: var(--good-bg); color: var(--good-fg); border-color: var(--good-line); }
+  .tone-warn { background: var(--warn-bg); color: var(--warn-fg); border-color: var(--warn-line); }
+  .tone-bad  { background: var(--bad-bg);  color: var(--bad-fg);  border-color: var(--bad-line); }
+  .tone-flat { background: var(--flat-bg); color: var(--flat-fg); border-color: var(--flat-line); }
+
+  /* ---------- tabs ---------- */
+  nav {
+    display: flex; gap: 2px; padding: 0 10px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 19;
+    overflow-x: auto; -webkit-overflow-scrolling: touch;
+  }
+  nav button {
+    appearance: none; border: 0; background: none; cursor: pointer;
+    font: inherit; font-size: 13.5px; color: var(--ink-soft);
+    padding: 10px 12px; border-bottom: 2px solid transparent; white-space: nowrap;
+  }
+  nav button:hover { color: var(--ink); }
+  nav button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  nav .n {
+    font-size: 11px; font-variant-numeric: tabular-nums;
+    background: var(--flat-bg); color: var(--flat-fg);
+    border-radius: 999px; padding: 1px 6px; margin-left: 5px;
+  }
+
+  main { padding: 14px 16px 48px; max-width: 1400px; margin: 0 auto; }
+  section[hidden] { display: none; }
+
+  /* ---------- filters ---------- */
+  .filters {
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px; margin-bottom: 12px;
+  }
+  .filters label { display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--ink-faint); }
+  select, input[type="search"] {
+    font: inherit; font-size: 13.5px; color: var(--ink);
+    background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 8px; min-width: 120px;
+  }
+  /* No flex shorthand here: the parent label is a column flex container, so
+     a flex-basis would size the input vertically instead of horizontally. */
+  input[type="search"] { width: 100%; min-width: 0; }
+  .filters label.grow { flex: 1 1 240px; min-width: 0; }
+  select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .btn {
+    font: inherit; font-size: 13px; cursor: pointer; color: var(--ink-soft);
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px;
+  }
+  .btn:hover { color: var(--ink); border-color: var(--ink-faint); }
+  .resultline { font-size: 12.5px; color: var(--ink-soft); margin-left: auto; font-variant-numeric: tabular-nums; }
+
+  /* ---------- tables ---------- */
+  .tablewrap { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  thead th {
+    position: sticky; top: 0; background: var(--panel); z-index: 2;
+    font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--ink-faint); font-weight: 600; border-bottom: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  thead th.sortable { cursor: pointer; user-select: none; }
+  thead th.sortable:hover { color: var(--ink); }
+  thead th .arrow { opacity: .4; font-size: 9px; }
+  thead th[aria-sort] .arrow { opacity: 1; color: var(--accent); }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover { background: var(--line-soft); }
+  .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  .muted { color: var(--ink-faint); }
+  .pill {
+    display: inline-block; font-size: 11px; font-weight: 600;
+    padding: 1px 7px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap;
+  }
+  .notecell { color: var(--ink-soft); font-size: 12.5px; max-width: 34ch; }
+  /* Keep desktop rows scannable; the full note is in the title attribute. */
+  .notecell .clamp {
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .empty { padding: 22px; text-align: center; color: var(--ink-faint); font-size: 13.5px; }
+
+  /* ---------- rollup cards ---------- */
+  .cards { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 13px 14px; }
+  .card-hd { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .card-hd h2 { font-size: 15px; }
+  .card-hd .code { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
+  .tag { font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--flat-bg); color: var(--flat-fg); border: 1px solid var(--flat-line); }
+  .freshness {
+    margin-left: auto; text-align: right; border-radius: 7px; padding: 5px 9px;
+    border: 1px solid transparent; min-width: 118px;
+  }
+  .freshness .fl { font-size: 9.5px; text-transform: uppercase; letter-spacing: .05em; opacity: .8; }
+  .freshness .fv { font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.15; }
+  .freshness .fd { font-size: 10.5px; opacity: .85; font-variant-numeric: tabular-nums; }
+
+  .kpis { display: flex; gap: 14px; margin-bottom: 11px; flex-wrap: wrap; }
+  .kpi .v { font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.1; }
+  .kpi .l { font-size: 10.5px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .04em; }
+
+  .metric { margin-top: 10px; }
+  .metric > .mh {
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--ink-faint); margin-bottom: 4px; display: flex; gap: 6px; align-items: baseline;
+  }
+  .stack { display: flex; height: 9px; border-radius: 999px; overflow: hidden; background: var(--flat-bg); }
+  .stack > span { display: block; }
+  .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 5px; font-size: 11.5px; color: var(--ink-soft); }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; vertical-align: baseline; }
+  .legend .n { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--ink); }
+
+  .bars { display: grid; gap: 3px; }
+  .bar { display: grid; grid-template-columns: 62px 1fr 34px; gap: 7px; align-items: center; font-size: 11.5px; }
+  .bar .bl { color: var(--ink-soft); white-space: nowrap; }
+  .bar .bt { height: 8px; background: var(--flat-bg); border-radius: 999px; overflow: hidden; }
+  .bar .bf { display: block; height: 100%; border-radius: 999px; }
+  .bar .bn { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
+
+  .cardnote { margin-top: 9px; font-size: 11.5px; color: var(--ink-faint); border-top: 1px solid var(--line-soft); padding-top: 7px; }
+
+  /* ---------- reconciliation ---------- */
+  .recon-block { margin-bottom: 20px; }
+  .recon-hd { display: flex; align-items: baseline; gap: 8px; margin-bottom: 7px; flex-wrap: wrap; }
+  .recon-hd h2 { font-size: 14px; }
+  .recon-hd .n { font-size: 11.5px; color: var(--ink-faint); font-variant-numeric: tabular-nums; }
+  .recon-hd p { margin: 0; font-size: 12px; color: var(--ink-faint); flex-basis: 100%; }
+  .note {
+    display: flex; gap: 9px; padding: 9px 11px; border-radius: 7px;
+    border: 1px solid var(--line); background: var(--panel); margin-bottom: 7px; font-size: 13px;
+  }
+  .note .nb { font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 4px; height: fit-content; white-space: nowrap; }
+  .note .nt { color: var(--ink-soft); }
+  .note .nt b { color: var(--ink); font-weight: 600; }
+  .dup { font-size: 12.5px; color: var(--ink-soft); }
+  .dup li { margin-bottom: 2px; }
+
+  footer { max-width: 1400px; margin: 0 auto; padding: 0 16px 30px; font-size: 11.5px; color: var(--ink-faint); }
+  footer code { font-family: var(--mono); font-size: 11px; }
+
+  /* ---------- phone ---------- */
+  @media (max-width: 760px) {
+    main { padding: 12px 10px 40px; }
+
+    /* The header carries four snapshot chips; pinning it would cost a third
+       of a phone screen before any data appears. Pin only the tab bar. */
+    header { position: static; padding: 10px 12px 8px; }
+    .built { margin-left: 0; flex-basis: 100%; }
+    .chips { gap: 5px; }
+    .chip { font-size: 11px; padding: 2px 7px; }
+    .chip .lbl { display: none; }
+    nav { padding: 0 6px; }
+    nav button { padding: 9px 8px; font-size: 13px; }
+    nav .n { margin-left: 4px; padding: 1px 5px; }
+    .filters { padding: 9px; gap: 7px; }
+    .filters label { flex: 1 1 130px; }
+    select, input[type="search"] { width: 100%; min-width: 0; }
+    .resultline { margin-left: 0; flex-basis: 100%; }
+
+    /* Tables collapse into one card per row, labels drawn from data-label. */
+    .tablewrap { background: none; border: 0; border-radius: 0; overflow: visible; }
+    table, tbody, tr, td { display: block; width: 100%; }
+    thead { display: none; }
+    tbody tr {
+      background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+      padding: 9px 11px; margin-bottom: 8px;
+    }
+    tbody tr:hover { background: var(--panel); }
+    td { border: 0; padding: 2px 0; display: flex; gap: 10px; align-items: baseline; }
+    td::before {
+      content: attr(data-label); flex: 0 0 88px; font-size: 10.5px;
+      text-transform: uppercase; letter-spacing: .04em; color: var(--ink-faint);
+    }
+    td.rowhead { padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--line-soft); }
+    td.rowhead::before { display: none; }
+    /* On a phone the row is already a card, so show the whole note. */
+    .notecell { max-width: none; }
+    .notecell .clamp { display: block; -webkit-line-clamp: none; overflow: visible; }
+    .freshness { margin-left: 0; width: 100%; text-align: left; }
+    .card-hd { gap: 7px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="hd-row">
+    <h1>Shower Stream <span class="sub">&middot; Fleet &amp; Ops</span></h1>
+    <div class="built">Page built <span id="builtAt">&mdash;</span></div>
+  </div>
+  <div class="chips" id="snapChips"></div>
+</header>
+
+<nav id="tabs" role="tablist">
+  <button role="tab" data-view="triage" aria-selected="true">Triage queue<span class="n" id="nTriage"></span></button>
+  <button role="tab" data-view="rollup" aria-selected="false">Fleet rollup</button>
+  <button role="tab" data-view="recon" aria-selected="false">Reconciliation<span class="n" id="nRecon"></span></button>
+</nav>
+
+<main>
+  <section id="view-triage" role="tabpanel">
+    <div class="filters">
+      <label>Property
+        <select id="fProperty"><option value="">All</option></select>
+      </label>
+      <label>Status
+        <select id="fStatus">
+          <option value="">Issue + Check</option>
+          <option value="Issue">Issue only</option>
+          <option value="Check">Check only</option>
+        </select>
+      </label>
+      <label>Action type
+        <select id="fAction"><option value="">All</option></select>
+      </label>
+      <label>Battery
+        <select id="fBattery">
+          <option value="">All</option>
+          <option value="critical">Critical</option>
+          <option value="warn">Marginal</option>
+          <option value="ok">Healthy</option>
+          <option value="unknown">No reading</option>
+        </select>
+      </label>
+      <label class="grow">Search
+        <input type="search" id="fSearch" placeholder="room, device, action, notes&hellip;" autocomplete="off">
+      </label>
+      <button class="btn" id="fClear" type="button">Clear</button>
+      <div class="resultline" id="triageCount"></div>
+    </div>
+    <div class="tablewrap">
+      <table id="triageTable">
+        <thead>
+          <tr>
+            <th class="sortable" data-key="property">Prop <span class="arrow">&#9650;&#9660;</span></th>
+            <th class="sortable" data-key="room">Room <span class="arrow">&#9650;&#9660;</span></th>
+            <th class="sortable" data-key="deviceName">Device <span class="arrow">&#9650;&#9660;</span></th>
+            <th class="sortable" data-key="status">Status <span class="arrow">&#9650;&#9660;</span></th>
+            <th class="sortable" data-key="daysSilent">Days silent <span class="arrow">&#9650;&#9660;</span></th>
+            <th class="sortable" data-key="battery">Battery <span class="arrow">&#9650;&#9660;</span></th>
+            <th class="sortable" data-key="actionItem">Action item <span class="arrow">&#9650;&#9660;</span></th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody id="triageBody"></tbody>
+      </table>
+      <div class="empty" id="triageEmpty" hidden>No rows match these filters.</div>
+    </div>
+  </section>
+
+  <section id="view-rollup" role="tabpanel" hidden>
+    <div class="cards" id="cards"></div>
+  </section>
+
+  <section id="view-recon" role="tabpanel" hidden>
+    <div id="reconNotes" class="recon-block"></div>
+    <div id="reconBlocks"></div>
+  </section>
+</main>
+
+<footer>
+  Internal ops tool &middot; fleet health and triage only (savings metrics live elsewhere) &middot;
+  read-only view of the source sheets &middot; unlisted, not indexed.
+  Thresholds and property names are edited in <code>config.js</code>.
+</footer>
+
+<script type="application/json" id="payload">{{DATA_JSON}}</script>
+<script>
+(function () {
+  'use strict';
+
+  var DATA = JSON.parse(document.getElementById('payload').textContent);
+  var TH = DATA.thresholds;
+  var DAY = 86400000;
+  var NOW = Date.now();
+
+  // ---------------------------------------------------------------- helpers
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+  function toneClass(t) { return t === 'good' ? 'tone-good' : t === 'warn' ? 'tone-warn' : t === 'bad' ? 'tone-bad' : 'tone-flat'; }
+  function toneVar(t) {
+    return t === 'good' ? 'var(--good-fg)' : t === 'warn' ? 'var(--warn-fg)'
+         : t === 'bad' ? 'var(--bad-fg)' : 'var(--flat-fg)';
+  }
+  function fmtDays(d) {
+    if (d === null || d === undefined) return '&mdash;';
+    if (d < 1) return (Math.round(d * 24) || 0) + 'h';
+    if (d < 10) return d.toFixed(1) + 'd';
+    return Math.round(d) + 'd';
+  }
+  function fmtDateTime(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    if (isNaN(d)) return '—';
+    return d.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    if (isNaN(d)) return '—';
+    return d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  /* Freshness is recomputed in the browser rather than baked in at build
+     time, so a page left open overnight still reports an honest age. */
+  function bucketFor(days, group) {
+    if (days === null || days === undefined) return group.neverBucket || null;
+    for (var i = 0; i < group.buckets.length; i++) {
+      var b = group.buckets[i];
+      if (b.maxDays === null || days < b.maxDays) return b;
+    }
+    return group.buckets[group.buckets.length - 1];
+  }
+  function snapshotAge(p) {
+    if (!p.snapshot.currentTime) return null;
+    return (NOW - new Date(p.snapshot.currentTime).getTime()) / DAY;
+  }
+
+  var BATTERY_TONES = { ok: 'good', warn: 'warn', critical: 'bad', unknown: 'flat', unclassified: 'flat' };
+  var BATTERY_LABELS = { ok: 'Healthy', warn: 'Marginal', critical: 'Critical', unknown: 'No reading', unclassified: 'Unclassified' };
+  var STATUS_TONES = { Issue: 'bad', Check: 'warn', Ok: 'good' };
+  var hbBuckets = TH.heartbeatAge.buckets.concat([TH.heartbeatAge.neverBucket]);
+  function hbBucketMeta(key) {
+    for (var i = 0; i < hbBuckets.length; i++) if (hbBuckets[i].key === key) return hbBuckets[i];
+    return { key: key, label: key, tone: 'flat' };
+  }
+
+  // ---------------------------------------------------------------- header
+  document.getElementById('builtAt').textContent = fmtDateTime(DATA.builtAt);
+  document.getElementById('nTriage').textContent = DATA.triage.length;
+
+  var R = DATA.reconciliation;
+  var reconTotal = R.ghosts.length + R.unregisteredReporters.length + R.roomDeviceMismatches.length
+                 + R.orphanTelemetryRooms.length + R.duplicateRoomRows.length;
+  document.getElementById('nRecon').textContent = reconTotal;
+
+  document.getElementById('snapChips').innerHTML = DATA.properties.map(function (p) {
+    var age = snapshotAge(p);
+    var b = bucketFor(age, TH.snapshotFreshness);
+    return '<span class="chip ' + toneClass(b ? b.tone : 'flat') + '" title="Export snapshot '
+      + esc(fmtDateTime(p.snapshot.currentTime)) + '">'
+      + '<b>' + esc(p.code) + '</b><span class="lbl">data as of</span> ' + esc(fmtDate(p.snapshot.currentTime))
+      + ' <span class="age">&middot; ' + fmtDays(age) + '<span class="lbl"> old</span></span></span>';
+  }).join('');
+
+  // ---------------------------------------------------------------- triage
+  var state = { sortKey: null, sortDir: 1 };
+  var els = {
+    property: document.getElementById('fProperty'),
+    status: document.getElementById('fStatus'),
+    action: document.getElementById('fAction'),
+    battery: document.getElementById('fBattery'),
+    search: document.getElementById('fSearch'),
+    body: document.getElementById('triageBody'),
+    count: document.getElementById('triageCount'),
+    empty: document.getElementById('triageEmpty')
+  };
+
+  DATA.properties.forEach(function (p) {
+    var o = document.createElement('option');
+    o.value = p.code;
+    o.textContent = p.code + ' — ' + p.name;
+    els.property.appendChild(o);
+  });
+  var actionTypes = [];
+  DATA.triage.forEach(function (r) { if (actionTypes.indexOf(r.actionType) === -1) actionTypes.push(r.actionType); });
+  actionTypes.sort().forEach(function (a) {
+    var o = document.createElement('option');
+    o.value = a; o.textContent = a;
+    els.action.appendChild(o);
+  });
+
+  function filtered() {
+    var prop = els.property.value, st = els.status.value, act = els.action.value,
+        bat = els.battery.value, q = els.search.value.trim().toLowerCase();
+    var rows = DATA.triage.filter(function (r) {
+      if (prop && r.property !== prop) return false;
+      if (st && r.status !== st) return false;
+      if (act && r.actionType !== act) return false;
+      if (bat && r.batteryClass !== bat) return false;
+      if (q) {
+        var hay = [r.room, r.deviceName, r.deviceId, r.actionItem, r.notes, r.propertyName, r.property]
+          .filter(Boolean).join(' ').toLowerCase();
+        if (hay.indexOf(q) === -1) return false;
+      }
+      return true;
+    });
+    if (state.sortKey) {
+      var k = state.sortKey, dir = state.sortDir;
+      rows = rows.slice().sort(function (a, b) {
+        var x = a[k], y = b[k];
+        if (x === null || x === undefined) return 1;      // blanks always last
+        if (y === null || y === undefined) return -1;
+        if (typeof x === 'number' && typeof y === 'number') return (x - y) * dir;
+        return String(x).localeCompare(String(y), undefined, { numeric: true }) * dir;
+      });
+    }
+    return rows;
+  }
+
+  function renderTriage() {
+    var rows = filtered();
+    els.count.textContent = rows.length + ' of ' + DATA.triage.length + ' rows';
+    els.empty.hidden = rows.length > 0;
+    els.body.innerHTML = rows.map(function (r) {
+      var hb = hbBucketMeta(r.heartbeatBucket);
+      var batTone = BATTERY_TONES[r.batteryClass] || 'flat';
+      return '<tr>'
+        + '<td class="rowhead" data-label="Prop"><b>' + esc(r.property) + '</b> <span class="muted">' + esc(r.propertyName) + '</span></td>'
+        + '<td class="num" data-label="Room"><b>' + esc(r.room) + '</b></td>'
+        + '<td class="mono" data-label="Device">' + (r.deviceName ? esc(r.deviceName) : '<span class="muted">—</span>') + '</td>'
+        + '<td data-label="Status"><span class="pill ' + toneClass(STATUS_TONES[r.status] || 'flat') + '">' + esc(r.status) + '</span></td>'
+        + '<td class="num" data-label="Days silent" title="' + esc(hb.label) + ' · last heartbeat ' + esc(fmtDateTime(r.lastHeartbeat)) + '">'
+          + '<span style="color:' + toneVar(hb.tone) + ';font-weight:600">' + fmtDays(r.daysSilent) + '</span></td>'
+        + '<td class="num" data-label="Battery" title="' + esc(BATTERY_LABELS[r.batteryClass] || '') + '">'
+          + (r.battery === null
+              ? '<span class="muted">—</span>'
+              : '<span style="color:' + toneVar(batTone) + ';font-weight:600">' + r.battery.toFixed(2) + '&thinsp;V</span>')
+          + '</td>'
+        + '<td data-label="Action">' + (r.actionItem ? esc(r.actionItem) : '<span class="muted">—</span>') + '</td>'
+        + '<td class="notecell" data-label="Notes"' + (r.notes ? ' title="' + esc(r.notes) + '"' : '') + '>'
+          + (r.notes ? '<span class="clamp">' + esc(r.notes) + '</span>' : '') + '</td>'
+        + '</tr>';
+    }).join('');
+  }
+
+  ['change', 'input'].forEach(function (ev) {
+    [els.property, els.status, els.action, els.battery, els.search].forEach(function (el) {
+      el.addEventListener(ev, renderTriage);
+    });
+  });
+  document.getElementById('fClear').addEventListener('click', function () {
+    els.property.value = ''; els.status.value = ''; els.action.value = '';
+    els.battery.value = ''; els.search.value = '';
+    state.sortKey = null; state.sortDir = 1;
+    updateSortIndicators();
+    renderTriage();
+  });
+
+  var headCells = document.querySelectorAll('#triageTable thead th.sortable');
+  function updateSortIndicators() {
+    headCells.forEach(function (th) {
+      if (th.dataset.key === state.sortKey) th.setAttribute('aria-sort', state.sortDir === 1 ? 'ascending' : 'descending');
+      else th.removeAttribute('aria-sort');
+    });
+  }
+  headCells.forEach(function (th) {
+    th.addEventListener('click', function () {
+      var k = th.dataset.key;
+      if (state.sortKey === k) state.sortDir = -state.sortDir;
+      else { state.sortKey = k; state.sortDir = (k === 'daysSilent' || k === 'battery') ? -1 : 1; }
+      updateSortIndicators();
+      renderTriage();
+    });
+  });
+
+  // ---------------------------------------------------------------- rollup
+  function stack(parts, total) {
+    if (!total) return '<div class="stack"></div>';
+    return '<div class="stack">' + parts.map(function (p) {
+      return '<span style="width:' + (p.n / total * 100) + '%;background:' + toneVar(p.tone) + '" title="'
+        + esc(p.label + ': ' + p.n) + '"></span>';
+    }).join('') + '</div>';
+  }
+  function legend(parts) {
+    return '<div class="legend">' + parts.filter(function (p) { return p.n > 0; }).map(function (p) {
+      return '<span><i style="background:' + toneVar(p.tone) + '"></i>' + esc(p.label) + ' <span class="n">' + p.n + '</span></span>';
+    }).join('') + '</div>';
+  }
+  function bars(parts, max) {
+    return '<div class="bars">' + parts.map(function (p) {
+      return '<div class="bar"><span class="bl">' + esc(p.label) + '</span>'
+        + '<span class="bt"><span class="bf" style="width:' + (max ? p.n / max * 100 : 0) + '%;background:' + toneVar(p.tone) + '"></span></span>'
+        + '<span class="bn">' + p.n + '</span></div>';
+    }).join('') + '</div>';
+  }
+
+  document.getElementById('cards').innerHTML = DATA.properties.map(function (p) {
+    var c = p.counts;
+    var age = snapshotAge(p);
+    var fb = bucketFor(age, TH.snapshotFreshness);
+
+    var mix = [
+      { label: 'Ok', n: c.ok, tone: 'good' },
+      { label: 'Check', n: c.check, tone: 'warn' },
+      { label: 'Issue', n: c.issue, tone: 'bad' }
+    ];
+    if (c.other > 0) mix.push({ label: 'Unknown', n: c.other, tone: 'flat' });
+
+    var hbParts = hbBuckets.map(function (b) {
+      return { label: b.label, n: p.heartbeatHistogram[b.key] || 0, tone: b.tone };
+    });
+    var hbMax = Math.max.apply(null, hbParts.map(function (x) { return x.n; }).concat([1]));
+
+    var batParts = ['ok', 'warn', 'critical', 'unclassified', 'unknown'].map(function (k) {
+      return { label: BATTERY_LABELS[k], n: p.batteryHistogram[k] || 0, tone: BATTERY_TONES[k] };
+    }).filter(function (x) { return x.n > 0; });
+    var batTotal = batParts.reduce(function (s, x) { return s + x.n; }, 0);
+
+    var notes = [];
+    if (!p.hasRegistry) notes.push('No registry tab &mdash; triage and telemetry only, cannot be reconciled.');
+    else notes.push(c.registryDevices + ' device' + (c.registryDevices === 1 ? '' : 's') + ' registered against ' + c.rooms + ' rooms'
+      + (c.registryInventoryOnly ? ' (plus ' + c.registryInventoryOnly + ' registry rows with no room assigned)' : '') + '.');
+    if (c.rooms !== c.distinctRooms) {
+      notes.push(c.rooms + ' rows cover ' + c.distinctRooms + ' distinct rooms &mdash; some rooms appear twice.');
+    }
+    if (p.snapshot.labelMatchesSnapshot === false) {
+      notes.push('Sheet header says &ldquo;' + esc(p.snapshot.headerLabel) + '&rdquo;; badge uses the export timestamp.');
+    }
+    if (!TH.batteryVoltage.confirmed) notes.push('Battery cutoffs unconfirmed &mdash; voltages shown unclassified.');
+
+    return '<div class="card">'
+      + '<div class="card-hd">'
+        + '<div><h2>' + esc(p.name) + '</h2><span class="code">ESA ' + esc(p.code) + '</span>'
+        + (p.tag ? ' <span class="tag">' + esc(p.tag) + '</span>' : '') + '</div>'
+        + '<div class="freshness ' + toneClass(fb ? fb.tone : 'flat') + '">'
+          + '<div class="fl">Data as of</div>'
+          + '<div class="fv">' + fmtDays(age) + ' old</div>'
+          + '<div class="fd">' + esc(fmtDate(p.snapshot.currentTime)) + '</div>'
+        + '</div>'
+      + '</div>'
+      + '<div class="kpis">'
+        + '<div class="kpi"><div class="v">' + c.rooms + '</div><div class="l">Installed</div></div>'
+        + '<div class="kpi"><div class="v" style="color:' + toneVar('good') + '">' + c.reporting + '</div><div class="l">Reporting</div></div>'
+        + '<div class="kpi"><div class="v" style="color:' + toneVar(c.silent ? 'bad' : 'flat') + '">' + c.silent + '</div><div class="l">Silent</div></div>'
+      + '</div>'
+      + '<div class="metric"><div class="mh">Status mix</div>' + stack(mix, c.rooms) + legend(mix) + '</div>'
+      + '<div class="metric"><div class="mh">Heartbeat age</div>' + bars(hbParts, hbMax) + '</div>'
+      + '<div class="metric"><div class="mh">Battery' + (TH.batteryVoltage.confirmed
+          ? ' <span class="muted">(ok ≥' + TH.batteryVoltage.okAbove + 'V, warn ≥' + TH.batteryVoltage.warnAbove + 'V)</span>'
+          : ' <span class="muted">(cutoffs unconfirmed)</span>') + '</div>'
+        + stack(batParts, batTotal) + legend(batParts) + '</div>'
+      + '<div class="cardnote">' + notes.join('<br>') + '</div>'
+      + '</div>';
+  }).join('');
+
+  // -------------------------------------------------------- reconciliation
+  document.getElementById('reconNotes').innerHTML = R.notes.map(function (n) {
+    var tone = n.severity === 'warn' ? 'tone-warn' : 'tone-flat';
+    return '<div class="note"><span class="nb ' + tone + '">' + esc(n.property) + '</span>'
+      + '<span class="nt">' + esc(n.text) + '</span></div>';
+  }).join('');
+
+  function table(cols, rows, rowFn) {
+    if (!rows.length) return '<div class="tablewrap"><div class="empty">Nothing to reconcile here.</div></div>';
+    return '<div class="tablewrap"><table><thead><tr>'
+      + cols.map(function (c) { return '<th>' + esc(c) + '</th>'; }).join('')
+      + '</tr></thead><tbody>'
+      + rows.map(rowFn).join('')
+      + '</tbody></table></div>';
+  }
+  function block(title, count, desc, html) {
+    return '<div class="recon-block"><div class="recon-hd"><h2>' + esc(title) + '</h2>'
+      + '<span class="n">' + count + '</span><p>' + desc + '</p></div>' + html + '</div>';
+  }
+
+  var blocks = '';
+
+  blocks += block('Ghosts', R.ghosts.length,
+    'In the registry, never seen in telemetry. Either never came online, or was removed without the registry being updated.',
+    table(['Prop', 'Room', 'Device', 'Particle ID', 'Installed', 'Registry notes'], R.ghosts, function (g) {
+      return '<tr>'
+        + '<td class="rowhead" data-label="Prop"><b>' + esc(g.property) + '</b> <span class="muted">' + esc(g.propertyName) + '</span></td>'
+        + '<td class="num" data-label="Room"><b>' + esc(g.room) + '</b></td>'
+        + '<td class="mono" data-label="Device">' + esc(g.deviceName || '—') + '</td>'
+        + '<td class="mono muted" data-label="Particle ID">' + esc(g.deviceId) + '</td>'
+        + '<td class="num" data-label="Installed">' + esc(fmtDate(g.installDate)) + '</td>'
+        + '<td class="notecell" data-label="Notes">' + esc(g.notes || '') + '</td>'
+        + '</tr>';
+    }));
+
+  blocks += block('Unregistered reporters', R.unregisteredReporters.length,
+    'Reporting telemetry but absent from the registry tab. These are real devices with no paperwork.',
+    table(['Prop', 'Room', 'Particle ID', 'Last heartbeat'], R.unregisteredReporters, function (u) {
+      return '<tr>'
+        + '<td class="rowhead" data-label="Prop"><b>' + esc(u.property) + '</b> <span class="muted">' + esc(u.propertyName) + '</span></td>'
+        + '<td class="num" data-label="Room"><b>' + esc(u.room || '—') + '</b></td>'
+        + '<td class="mono muted" data-label="Particle ID">' + esc(u.deviceId) + '</td>'
+        + '<td class="num" data-label="Last heartbeat">' + esc(fmtDate(u.lastHeartbeat)) + '</td>'
+        + '</tr>';
+    }));
+
+  blocks += block('Room / device mismatches', R.roomDeviceMismatches.length,
+    'The registry and the telemetry disagree about where a device is, or which device is in a room.',
+    table(['Prop', 'What', 'Device', 'Registry says', 'Telemetry says'], R.roomDeviceMismatches, function (m) {
+      return '<tr>'
+        + '<td class="rowhead" data-label="Prop"><b>' + esc(m.property) + '</b> <span class="muted">' + esc(m.propertyName) + '</span></td>'
+        + '<td data-label="What">' + esc(m.kind) + '</td>'
+        + '<td class="mono" data-label="Device">' + esc(m.deviceName || m.deviceId || '—') + '</td>'
+        + '<td class="mono" data-label="Registry">' + esc(m.registryRoom || (m.registryDeviceId || '').slice(0, 12) || '—') + '</td>'
+        + '<td class="mono" data-label="Telemetry">' + esc(m.telemetryRoom || (m.telemetryDeviceId || '').slice(0, 12) || '—') + '</td>'
+        + '</tr>';
+    }));
+
+  blocks += block('Reporting from an unlisted room', R.orphanTelemetryRooms.length,
+    'Telemetry arrives from a room the triage sheet does not list as installed.',
+    table(['Prop', 'Room', 'Particle ID', 'Last heartbeat'], R.orphanTelemetryRooms, function (o) {
+      return '<tr>'
+        + '<td class="rowhead" data-label="Prop"><b>' + esc(o.property) + '</b> <span class="muted">' + esc(o.propertyName) + '</span></td>'
+        + '<td class="num" data-label="Room"><b>' + esc(o.room) + '</b></td>'
+        + '<td class="mono muted" data-label="Particle ID">' + esc(o.deviceId) + '</td>'
+        + '<td class="num" data-label="Last heartbeat">' + esc(fmtDate(o.lastHeartbeat)) + '</td>'
+        + '</tr>';
+    }));
+
+  blocks += block('Duplicated room rows', R.duplicateRoomRows.length,
+    'One room occupying several Room Status rows, each with its own action item. All rows are kept in the triage queue.',
+    table(['Prop', 'Room', 'Rows', 'Entries'], R.duplicateRoomRows, function (d) {
+      return '<tr>'
+        + '<td class="rowhead" data-label="Prop"><b>' + esc(d.property) + '</b> <span class="muted">' + esc(d.propertyName) + '</span></td>'
+        + '<td class="num" data-label="Room"><b>' + esc(d.room) + '</b></td>'
+        + '<td class="num" data-label="Rows">' + d.count + '</td>'
+        + '<td data-label="Entries"><ul class="dup" style="margin:0;padding-left:16px">'
+          + d.entries.map(function (e) {
+              return '<li>' + esc(e.status) + ' — ' + esc(e.actionItem || '—')
+                + (e.notes ? ' <span class="muted">(' + esc(e.notes) + ')</span>' : '') + '</li>';
+            }).join('')
+        + '</ul></td>'
+        + '</tr>';
+    }));
+
+  document.getElementById('reconBlocks').innerHTML = blocks;
+
+  // ------------------------------------------------------------------ tabs
+  var views = { triage: 'view-triage', rollup: 'view-rollup', recon: 'view-recon' };
+  function show(name) {
+    if (!views[name]) name = 'triage';
+    Object.keys(views).forEach(function (k) {
+      document.getElementById(views[k]).hidden = (k !== name);
+    });
+    document.querySelectorAll('#tabs button').forEach(function (b) {
+      b.setAttribute('aria-selected', String(b.dataset.view === name));
+    });
+    if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
+  }
+  document.querySelectorAll('#tabs button').forEach(function (b) {
+    b.addEventListener('click', function () { show(b.dataset.view); });
+  });
+
+  renderTriage();
+  show(location.hash.slice(1) || 'triage');
+})();
+</script>
+</body>
+</html>

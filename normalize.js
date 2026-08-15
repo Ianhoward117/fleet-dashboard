@@ -149,6 +149,23 @@ function bucketByDays(days, group) {
   return group.buckets[group.buckets.length - 1].key;
 }
 
+/**
+ * Action Items are free text with recurring patterns. Collapse them to a
+ * small set of canonical types so the triage view can offer a real filter,
+ * while the original text is still shown to the operator verbatim.
+ */
+function actionType(text) {
+  if (!text) return 'None';
+  const s = text.trim().toLowerCase();
+  if (s === 'none') return 'None';
+  if (/^battery\b/.test(s)) return 'Battery';
+  if (/^replace device/.test(s)) return 'Replace device';
+  if (/run a shower/.test(s)) return 'Run a shower';
+  if (/^no device/.test(s)) return 'No device';
+  if (/recheck device name/.test(s)) return 'Recheck device name';
+  return 'Other';
+}
+
 function batteryClass(volts) {
   const t = THRESHOLDS.batteryVoltage;
   if (volts === null || volts === undefined) return 'unknown';
@@ -390,6 +407,7 @@ function normalize() {
         lastShower: iso(t.lastShower),
         daysNoShower: round(t.daysNoShower, 1),
         actionItem: t.actionItem,
+        actionType: actionType(t.actionItem),
         notes: t.notes,
         registered: Boolean(regRec),
         installDate: regRec ? iso(regRec.installDate) : null,
