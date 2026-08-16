@@ -30,6 +30,20 @@ const POLL_EVERY_MS = num('VERIFY_POLL_MS', 15 * 1000);
 // How recent the published page must be to count as "this run refreshed it".
 const MAX_BUILD_AGE_MS = num('VERIFY_MAX_BUILD_AGE_MS', 2 * 60 * 60 * 1000);
 
+/**
+ * The strong check: the timestamp that was published *before* this run
+ * triggered a build. When set, the page must carry a strictly newer one,
+ * which proves this run caused a rebuild rather than merely finding a recent
+ * page lying around. Falls back to the age check when unset (for example on
+ * a manual run, or when the site was unreachable beforehand).
+ */
+const NEWER_THAN = (() => {
+  const raw = (process.env.VERIFY_NEWER_THAN || '').trim();
+  if (!raw) return null;
+  const d = new Date(raw);
+  return isNaN(d) ? null : d;
+})();
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Pull the embedded payload back out of the published HTML. */
@@ -87,14 +101,23 @@ async function verifyLive() {
             last.problems.map((p) => `  - ${p}`).join('\n')
         );
       }
-      if (last.ageMs !== null && last.ageMs <= MAX_BUILD_AGE_MS) {
+      const fresh = NEWER_THAN
+        ? last.builtAt && last.builtAt > NEWER_THAN
+        : last.ageMs !== null && last.ageMs <= MAX_BUILD_AGE_MS;
+
+      if (fresh) {
         console.log(
           `VERIFY  ok - published ${mins} min ago, ` +
-            `${last.data.properties.length} properties, ${last.rooms} rooms`
+            `${last.data.properties.length} properties, ${last.rooms} rooms` +
+            (NEWER_THAN ? ' (newer than the build this run started from)' : '')
         );
         return true;
       }
-      console.log(`VERIFY  page is ${mins} min old, waiting for the new build...`);
+      console.log(
+        NEWER_THAN
+          ? `VERIFY  still serving the previous build (${last.builtAt ? last.builtAt.toISOString() : 'unknown'}), waiting...`
+          : `VERIFY  page is ${mins} min old, waiting for the new build...`
+      );
     } catch (err) {
       // Network blips and mid-deploy 404s are expected while a build runs.
       lastError = err.message.split('\n')[0];
@@ -106,8 +129,10 @@ async function verifyLive() {
       // Two different failures land here, and they need different fixes.
       const reachedOurPage = last && last.ageMs !== null;
       const detail = reachedOurPage
-        ? `  The page is reachable but was last published ${Math.round(last.ageMs / 60000)} minutes ago,\n` +
-          `  so this run did not produce a new build. Check the Netlify deploy log:\n` +
+        ? `  The page is reachable but still shows the build from ` +
+          `${last.builtAt ? last.builtAt.toISOString() : 'an unknown time'}\n` +
+          `  (${Math.round(last.ageMs / 60000)} minutes old), so this run did not produce a new\n` +
+          `  build. Check the Netlify deploy log:\n` +
           `  a failed build leaves the previous page serving, which is why the site\n` +
           `  still looks fine while the data quietly goes stale.`
         : `  Could not read the dashboard at all. Last error: ${lastError || 'unknown'}\n` +
@@ -122,11 +147,32 @@ async function verifyLive() {
   }
 }
 
-module.exports = { verifyLive };
+/**
+ * Print the timestamp currently published, or nothing if the site cannot be
+ * read. The workflow captures this before triggering a build and feeds it
+ * back in as VERIFY_NEWER_THAN. Never fails: an unreachable site here just
+ * means the run falls back to the age check.
+ */
+async function currentBuiltAt() {
+  try {
+    const { data } = await probe();
+    return data.builtAt || '';
+  } catch {
+    return '';
+  }
+}
+
+module.exports = { verifyLive, currentBuiltAt };
 
 if (require.main === module) {
-  verifyLive().catch((err) => {
-    console.error(`\n${err.message}`);
-    process.exit(1);
-  });
+  if (process.argv.includes('--current')) {
+    currentBuiltAt().then((v) => {
+      process.stdout.write(v + '\n');
+    });
+  } else {
+    verifyLive().catch((err) => {
+      console.error(`\n${err.message}`);
+      process.exit(1);
+    });
+  }
 }

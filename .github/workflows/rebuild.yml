@@ -47,6 +47,12 @@ jobs:
       - name: Record today's counts
         run: node snapshot.js
 
+      # Captured before anything triggers a build, so the check afterwards can
+      # require a strictly newer timestamp rather than just a recent one.
+      - name: Note the currently published build
+        id: before
+        run: echo "builtAt=$(node verify-live.js --current)" >> "$GITHUB_OUTPUT"
+
       - name: Commit history if it changed
         id: commit
         run: |
@@ -107,4 +113,6 @@ jobs:
       # the refresh looks successful from here. Failing the workflow is what
       # turns that silent staleness into a notification.
       - name: Verify the live site actually refreshed
+        env:
+          VERIFY_NEWER_THAN: ${{ steps.before.outputs.builtAt }}
         run: node verify-live.js
