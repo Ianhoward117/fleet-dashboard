@@ -274,15 +274,15 @@
 </header>
 
 <nav id="tabs" role="tablist">
-  <button role="tab" data-view="rooms" aria-selected="true">All rooms<span class="n" id="nRooms"></span></button>
-  <button role="tab" data-view="rollup" aria-selected="false">Fleet rollup</button>
+  <button role="tab" data-view="rollup" aria-selected="true">Fleet rollup</button>
+  <button role="tab" data-view="rooms" aria-selected="false">All rooms<span class="n" id="nRooms"></span></button>
   <button role="tab" data-view="recon" aria-selected="false">Reconciliation<span class="n" id="nRecon"></span></button>
 </nav>
 
 <main>
   <!-- Every room, worst first. The status filter narrows this to the triage
        queue when that is what you want. -->
-  <section id="view-table" role="tabpanel">
+  <section id="view-table" role="tabpanel" hidden>
     <div class="filters">
       <label>Property
         <select id="fProperty"><option value="">All</option></select>
@@ -330,7 +330,7 @@
     </div>
   </section>
 
-  <section id="view-rollup" role="tabpanel" hidden>
+  <section id="view-rollup" role="tabpanel">
     <div class="cards" id="cards"></div>
   </section>
 
@@ -594,7 +594,7 @@
       if (!state.status) state.status = 'attention';
       return 'rooms';
     }
-    return v && views[v] ? v : 'rooms';
+    return v && views[v] ? v : DEFAULT_VIEW;
   }
 
   function syncControlsFromState() {
@@ -881,15 +881,18 @@
   document.getElementById('reconBlocks').innerHTML = blocks;
 
   // ------------------------------------------------------------------ tabs
+  // Key order is tab order. Fleet rollup leads because it answers "how is the
+  // fleet doing" before the room list answers "which one do I fix".
   var views = {
-    rooms: 'view-table',
     rollup: 'view-rollup',
+    rooms: 'view-table',
     recon: 'view-recon'
   };
-  var currentView = 'rooms';
+  var DEFAULT_VIEW = 'rollup';
+  var currentView = DEFAULT_VIEW;
 
   function show(name, skipUrl) {
-    if (!views[name]) name = 'rooms';
+    if (!views[name]) name = DEFAULT_VIEW;
     currentView = name;
     var target = views[name];
     ['view-table', 'view-rollup', 'view-recon'].forEach(function (id) {

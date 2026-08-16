@@ -18,8 +18,8 @@ way you would treat the sheets themselves.
 
 | View | Purpose |
 | --- | --- |
-| **All rooms** (default) | Every room in the fleet, one line each, sorted worst-first: `Issue`, then `Check`, then `Ok`, longest-silent first within each. Filter by property, status, action type and battery class; free-text search across room, device, action and notes; every column sorts. Selecting **Issue + Check** turns this into the ops triage queue, which is also the consolidated diagnostic register. |
-| **Fleet rollup** | One card per property: installed / reporting / silent, the Ok-Issue-Check mix, an **Issue trend** sparkline, a heartbeat-age histogram, battery distribution, and a prominent colour-coded **freshness badge** showing how old that property's data actually is. |
+| **Fleet rollup** (default) | One card per property: installed / reporting / silent, the Ok-Issue-Check mix, an **Issue trend** sparkline, a heartbeat-age histogram, battery distribution, and a prominent colour-coded **freshness badge** showing how old that property's data actually is. Leads because it answers "how is the fleet doing" before the room list answers "which one do I fix". |
+| **All rooms** | Every room in the fleet, one line each, sorted worst-first: `Issue`, then `Check`, then `Ok`, longest-silent first within each. Filter by property, status, action type and battery class; free-text search across room, device, action and notes; every column sorts. Selecting **Issue + Check** turns this into the ops triage queue, which is also the consolidated diagnostic register. |
 | **Reconciliation** | Where the three sources disagree: ghosts, unregistered reporters, room/device mismatches, telemetry from unlisted rooms, duplicated room rows, and per-property caveats. |
 
 The status filter carries live counts — `Issue + Check (236)`, `Ok (185)` — so
@@ -253,7 +253,7 @@ Edit, commit, push — Netlify rebuilds automatically.
 
 ```js
 const PROPERTIES = [
-  { code: '6197', name: 'ESA 6197', sheetKey: 'wo_6197', registryTab: null, tag: null },
+  { code: '6197', name: 'Round Rock - Southwest', sheetKey: 'wo_6197', registryTab: null, tag: null },
   ...
 ];
 ```

@@ -51,28 +51,28 @@ const SITE_URL = 'https://ss-fleet-rxsm.netlify.app';
 const PROPERTIES = [
   {
     code: '6197',
-    name: 'ESA 6197', // TODO: confirm display name with Ian
+    name: 'Round Rock - Southwest',
     sheetKey: 'wo_6197',
     registryTab: null, // no registry tab exists - triage/telemetry only
     tag: null,
   },
   {
     code: '6178',
-    name: 'Round Rock / Southwest',
+    name: 'Austin - Southwest',
     sheetKey: 'wo_6178',
     registryTab: 'ESA 6178 - Austin - Southwest',
     tag: null,
   },
   {
     code: '9502',
-    name: 'Airport',
+    name: 'Austin - Airport',
     sheetKey: 'wo_9502',
     registryTab: 'ESA 9502 - Austin - Austin Airp',
     tag: 'active-mode paused',
   },
   {
     code: '9829',
-    name: 'Northwest',
+    name: 'Austin - Northwest Research',
     sheetKey: 'wo_9829',
     registryTab: 'ESA 9829 - Austin - Northwest',
     tag: 'offboarding',
