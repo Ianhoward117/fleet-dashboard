@@ -101,3 +101,10 @@ jobs:
       - name: Note the push-triggered build
         if: steps.commit.outputs.changed == 'true'
         run: echo "History was pushed; Netlify rebuilds from that commit automatically."
+
+      # The point of the whole workflow is that the published page got newer.
+      # Without this, a Netlify build that fails leaves yesterday's page up and
+      # the refresh looks successful from here. Failing the workflow is what
+      # turns that silent staleness into a notification.
+      - name: Verify the live site actually refreshed
+        run: node verify-live.js

@@ -25,6 +25,11 @@ const SHEET_IDS = {
   wo_9829: '1ac_Lbr66Xwz2_p9TrHZhchhgJwbTIiQNYYBbkI6EgeM',
 };
 
+// Where the built dashboard is published. The daily workflow checks this URL
+// after triggering a rebuild, so a refresh that silently stops working turns
+// into a failed workflow rather than a page that quietly goes stale.
+const SITE_URL = 'https://ss-fleet-rxsm.netlify.app';
+
 // ---------------------------------------------------------------------------
 // Properties
 // ---------------------------------------------------------------------------
@@ -130,4 +135,4 @@ const THRESHOLDS = {
   },
 };
 
-module.exports = { SHEET_IDS, PROPERTIES, THRESHOLDS };
+module.exports = { SHEET_IDS, SITE_URL, PROPERTIES, THRESHOLDS };

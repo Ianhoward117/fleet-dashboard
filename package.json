@@ -7,7 +7,9 @@
     "build": "node build.js",
     "fetch": "node fetch.js",
     "normalize": "node normalize.js",
-    "render": "node render.js"
+    "render": "node render.js",
+    "snapshot": "node snapshot.js",
+    "verify": "node verify-live.js"
   },
   "engines": {
     "node": ">=18"

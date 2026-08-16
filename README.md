@@ -187,15 +187,38 @@ published**. That is the right behaviour — a partial fleet hides problems —
 but it means a failure is quiet from the outside: the previous page stays up
 and simply stops getting newer.
 
-Two things make that visible:
+The daily workflow is the watchdog. It does not just poke Netlify — it runs
+the same fetch and normalize the site does, and then checks the published
+result:
 
-- **Netlify deploy notifications** email `operations@showerstream.net`
-  whenever a deploy fails, so a broken sheet link surfaces the same morning.
-- **The freshness badges and the "Page built" timestamp.** If "Page built" is
-  more than a day old, the daily refresh is not completing.
+```bash
+node verify-live.js     # or: npm run verify
+```
 
-Check a failure in the Netlify deploy log first — `fetch.js` names the
-property and the likely cause (404 = sheet ID changed, 403 = no longer
+`verify-live.js` polls the live site and fails if the page cannot be read, is
+missing a configured property, has lost its `noindex` tag, or was last
+published too long ago. Because it runs as the last step of the workflow,
+**any of those turns into a failed GitHub Actions run**, and GitHub emails the
+account that owns the schedule. That covers the case Netlify cannot: a build
+that failed, leaving yesterday's page serving.
+
+Run it by hand any time to answer "is the dashboard actually current?".
+
+Netlify's own email notifications are a **Pro** feature and are not enabled on
+this site. The free alternatives, in the order worth considering:
+
+1. **GitHub commit status** (Netlify → Notifications, free) — puts deploy
+   success/failure directly on the commit in GitHub.
+2. **HTTP POST request** (Netlify → Notifications, free) — post deploy events
+   to a Slack incoming webhook, if the team uses Slack.
+3. **Netlify Pro** — if email to a shared inbox is worth the subscription.
+
+The two passive signals remain useful either way: the **freshness badges**,
+and the **"Page built"** timestamp in the header. If "Page built" is more than
+a day old, the refresh is not completing.
+
+When a build does fail, read the Netlify deploy log first — `fetch.js` names
+the property and the likely cause (404 = sheet ID changed, 403 = no longer
 publicly readable, missing tab = renamed sheet).
 
 ## Editing thresholds and property metadata
