@@ -202,6 +202,17 @@ published too long ago. Because it runs as the last step of the workflow,
 account that owns the schedule. That covers the case Netlify cannot: a build
 that failed, leaving yesterday's page serving.
 
+Inside the workflow the check is stricter than a plain freshness test. The
+published timestamp is recorded *before* anything triggers a build
+(`node verify-live.js --current`) and passed back in as `VERIFY_NEWER_THAN`,
+so the page must come back **strictly newer**. Without that, a build could
+fail while a page from a few minutes earlier still satisfied the age
+tolerance — the check would pass and prove nothing.
+
+Tolerances are environment-overridable, which is also how the failure paths
+get tested: `VERIFY_MAX_WAIT_MS`, `VERIFY_POLL_MS`, `VERIFY_MAX_BUILD_AGE_MS`,
+`VERIFY_NEWER_THAN`.
+
 Run it by hand any time to answer "is the dashboard actually current?".
 
 Netlify's own email notifications are a **Pro** feature and are not enabled on
