@@ -215,14 +215,26 @@ get tested: `VERIFY_MAX_WAIT_MS`, `VERIFY_POLL_MS`, `VERIFY_MAX_BUILD_AGE_MS`,
 
 Run it by hand any time to answer "is the dashboard actually current?".
 
-Netlify's own email notifications are a **Pro** feature and are not enabled on
-this site. The free alternatives, in the order worth considering:
+### Who gets told
 
-1. **GitHub commit status** (Netlify → Notifications, free) — puts deploy
-   success/failure directly on the commit in GitHub.
-2. **HTTP POST request** (Netlify → Notifications, free) — post deploy events
-   to a Slack incoming webhook, if the team uses Slack.
-3. **Netlify Pro** — if email to a shared inbox is worth the subscription.
+**Alerts go to the GitHub account that owns the schedule** — currently
+`Ianhoward117`. Netlify's own deploy-failure email is a **Pro** feature and is
+not enabled on this site, so GitHub Actions is the notification channel.
+
+Confirm it is switched on at least once: GitHub → Settings → Notifications →
+Actions → *"Send notifications for failed workflows only"* (the default).
+
+There is deliberately **no alert to a shared inbox yet**, because the fleet
+has one owner today. When that changes, in rough order of effort:
+
+1. **HTTP POST request** (Netlify → Notifications, free) — post deploy events
+   to a Slack incoming webhook. Best fit if the team lives in Slack.
+2. **A GitHub account for the shared inbox**, added as a collaborator and
+   watching the repo, so it receives the same failure emails.
+3. **GitHub commit status** (Netlify → Notifications, free) — puts deploy
+   success/failure on the commit; a passive signal rather than a push.
+4. **Netlify Pro** — native email to any address, if it is worth the
+   subscription for one feature.
 
 The two passive signals remain useful either way: the **freshness badges**,
 and the **"Page built"** timestamp in the header. If "Page built" is more than
