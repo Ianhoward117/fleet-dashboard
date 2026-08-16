@@ -17,8 +17,38 @@ const path = require('path');
 
 const DATA_FILE = path.join(__dirname, 'data', 'normalized.json');
 const TEMPLATE_FILE = path.join(__dirname, 'template.html');
+const HISTORY_DIR = path.join(__dirname, 'history');
+const LOGO_FILE = path.join(__dirname, 'assets', 'showerstream-mark.png');
 const OUT_DIR = path.join(__dirname, 'dist');
 const OUT_FILE = path.join(OUT_DIR, 'index.html');
+
+/**
+ * Read the committed daily records, oldest first, so the rollup can draw
+ * trend lines. Missing or empty history is normal on a fresh checkout and
+ * must never fail the build - the page just says it is still collecting.
+ */
+function loadHistory() {
+  if (!fs.existsSync(HISTORY_DIR)) return [];
+  const records = [];
+  for (const name of fs.readdirSync(HISTORY_DIR).sort()) {
+    if (!name.endsWith('.json')) continue;
+    try {
+      records.push(JSON.parse(fs.readFileSync(path.join(HISTORY_DIR, name), 'utf8')));
+    } catch {
+      console.warn(`RENDER  skipping unreadable history file: ${name}`);
+    }
+  }
+  // Keep the page light: a rolling window is enough to see a direction.
+  return records.slice(-90);
+}
+
+/** Inline the logo so the published page still makes zero external requests. */
+function logoDataUri() {
+  if (!fs.existsSync(LOGO_FILE)) {
+    throw new Error(`RENDER FAILED: missing ${LOGO_FILE}\n  The header logo is required.`);
+  }
+  return `data:image/png;base64,${fs.readFileSync(LOGO_FILE).toString('base64')}`;
+}
 
 /**
  * Embed JSON inside a <script> tag safely. "</script>" anywhere in the data
@@ -48,6 +78,23 @@ function assertSane(data) {
     problems.push(
       `triage queue has ${data.triage.length} rows but properties report ${expectedTriage} Issue+Check rows`
     );
+  }
+
+  // The browser derives the triage queue from the flat room list, so that
+  // list must contain every room and must still yield the same Issue+Check
+  // count. This guards the derivation, not just the source data.
+  const flat = data.properties.flatMap((p) => p.rooms);
+  const expectedRooms = data.properties.reduce((n, p) => n + p.counts.rooms, 0);
+  if (flat.length !== expectedRooms) {
+    problems.push(`flattened room list has ${flat.length} rows, expected ${expectedRooms}`);
+  }
+  const derivedTriage = flat.filter((r) => r.status === 'Issue' || r.status === 'Check').length;
+  if (derivedTriage !== expectedTriage) {
+    problems.push(`triage derived from rooms gives ${derivedTriage}, expected ${expectedTriage}`);
+  }
+  const missingLastChecked = flat.filter((r) => !('lastChecked' in r)).length;
+  if (missingLastChecked) {
+    problems.push(`${missingLastChecked} room rows are missing lastChecked`);
   }
 
   for (const p of data.properties) {
@@ -85,22 +132,44 @@ function render() {
   const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
   assertSane(data);
 
-  // The page never uses the per-property room arrays - the triage queue has
-  // its own flattened list - so drop them from what ships to the browser.
-  // They stay in data/normalized.json for debugging and future trend work.
+  // Ship one flat array of every room and let the browser derive the triage
+  // queue from it. Sending both would duplicate the 236 triage rows inside
+  // the 421 room rows for no benefit.
+  //
+  // Only the fields the page actually reads are sent. roomKey is an internal
+  // join key, and the shower/registry columns are not shown anywhere; all of
+  // them remain in data/normalized.json for analysis.
+  const PAGE_FIELDS = [
+    'property', 'propertyName', 'room', 'deviceName', 'deviceId', 'status',
+    'lastHeartbeat', 'daysSilent', 'heartbeatBucket', 'battery', 'batteryClass',
+    'actionItem', 'actionType', 'lastChecked', 'notes',
+  ];
+  const rooms = data.properties.flatMap((p) =>
+    p.rooms.map((r) => {
+      const slim = {};
+      for (const f of PAGE_FIELDS) slim[f] = r[f] === undefined ? null : r[f];
+      return slim;
+    })
+  );
+
   const payload = {
     builtAt: data.builtAt,
     thresholds: data.thresholds,
-    triage: data.triage,
+    rooms,
     reconciliation: data.reconciliation,
-    properties: data.properties.map(({ rooms, ...rest }) => rest),
+    properties: data.properties.map(({ rooms: _rooms, ...rest }) => rest),
+    history: loadHistory(),
   };
 
   let html = fs.readFileSync(TEMPLATE_FILE, 'utf8');
-  if (!html.includes('{{DATA_JSON}}')) {
-    throw new Error('RENDER FAILED: template.html no longer contains the {{DATA_JSON}} placeholder.');
+  for (const token of ['{{DATA_JSON}}', '{{LOGO_DATA_URI}}']) {
+    if (!html.includes(token)) {
+      throw new Error(`RENDER FAILED: template.html no longer contains the ${token} placeholder.`);
+    }
   }
-  html = html.replace('{{DATA_JSON}}', () => embedJson(payload));
+  html = html
+    .replace('{{DATA_JSON}}', () => embedJson(payload))
+    .replaceAll('{{LOGO_DATA_URI}}', () => logoDataUri());
 
   if (!/<meta\s+name="robots"\s+content="noindex/i.test(html)) {
     throw new Error('RENDER FAILED: the noindex robots meta tag is missing from template.html.');
@@ -110,12 +179,18 @@ function render() {
   fs.writeFileSync(OUT_FILE, html);
 
   const kb = (Buffer.byteLength(html) / 1024).toFixed(1);
+  const triageCount = rooms.filter((r) => r.status === 'Issue' || r.status === 'Check').length;
+  const recon = payload.reconciliation;
   console.log(`RENDER  wrote dist/index.html  ${kb} KB`);
   console.log(
-    `RENDER  ${payload.properties.length} properties, ${payload.triage.length} triage rows, ` +
-      `${payload.reconciliation.ghosts.length + payload.reconciliation.unregisteredReporters.length +
-        payload.reconciliation.roomDeviceMismatches.length + payload.reconciliation.orphanTelemetryRooms.length +
-        payload.reconciliation.duplicateRoomRows.length} reconciliation items`
+    `RENDER  ${payload.properties.length} properties, ${rooms.length} rooms, ${triageCount} triage rows, ` +
+      `${recon.ghosts.length + recon.unregisteredReporters.length + recon.roomDeviceMismatches.length +
+        recon.orphanTelemetryRooms.length + recon.duplicateRoomRows.length} reconciliation items`
+  );
+  console.log(
+    payload.history.length
+      ? `RENDER  ${payload.history.length} day(s) of history for trend lines`
+      : 'RENDER  no history yet - trends begin once the daily workflow has run'
   );
   return OUT_FILE;
 }

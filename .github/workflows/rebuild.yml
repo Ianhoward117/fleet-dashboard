@@ -1,26 +1,76 @@
 name: daily-refresh
 
-# Nudges Netlify to rebuild, which re-fetches all five Google Sheets and
-# republishes the dashboard. The build itself runs on Netlify, not here -
-# this workflow only pokes the build hook.
+# Two jobs in one pass:
+#   1. record today's fleet counts into history/ and commit them
+#   2. make Netlify rebuild, so the published page picks that history up
 #
-# 11:00 UTC is 06:00 CDT / 05:00 CST, so the refresh lands before the
-# working day in Austin all year round without needing a DST-aware schedule.
+# The dashboard build itself still runs on Netlify. This workflow only
+# captures the trend record and pokes the build hook.
+#
+# 11:00 UTC is 06:00 CDT / 05:00 CST, so the refresh lands before the working
+# day in Austin all year round without needing a DST-aware schedule.
 
 on:
   schedule:
     - cron: "0 11 * * *"
   workflow_dispatch: # lets you force a refresh from the Actions tab
 
-# The job needs no access to the repository itself.
-permissions: {}
+# Needed to commit the daily history record back to the repository.
+permissions:
+  contents: write
+
+# Never let two refreshes race each other onto the same history file.
+concurrency:
+  group: daily-refresh
+  cancel-in-progress: false
 
 jobs:
-  trigger:
-    name: Trigger Netlify build
+  refresh:
+    name: Record history and trigger Netlify
     runs-on: ubuntu-latest
     steps:
-      - name: POST the Netlify build hook
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Fetch sheets and normalize
+        run: |
+          node fetch.js
+          node normalize.js
+
+      - name: Record today's counts
+        run: node snapshot.js
+
+      - name: Commit history if it changed
+        id: commit
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add history/
+
+          if git diff --cached --quiet; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "No history change - nothing to commit."
+          else
+            git commit -m "Record fleet counts for $(date -u +%Y-%m-%d)
+
+          Automated daily snapshot from the scheduled refresh."
+            git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Committed and pushed today's history record."
+          fi
+
+      # Pushing above already triggers a Netlify build. Only poke the hook
+      # when nothing was pushed, so a normal day produces one build, not two.
+      - name: Trigger Netlify build
+        if: steps.commit.outputs.changed != 'true'
         env:
           HOOK_URL: ${{ secrets.NETLIFY_BUILD_HOOK }}
         run: |
@@ -33,7 +83,7 @@ jobs:
           fi
 
           # Only the status code is captured; the hook URL is never echoed.
-          status=$(curl --silent --show-error --fail-with-body \
+          status=$(curl --silent --show-error \
                         --request POST --data '{}' \
                         --output /dev/null --write-out '%{http_code}' \
                         "$HOOK_URL") || true
@@ -47,3 +97,7 @@ jobs:
                      "the hook was deleted or the secret holds a stale URL."
                 exit 1 ;;
           esac
+
+      - name: Note the push-triggered build
+        if: steps.commit.outputs.changed == 'true'
+        run: echo "History was pushed; Netlify rebuilds from that commit automatically."

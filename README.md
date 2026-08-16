@@ -19,8 +19,29 @@ way you would treat the sheets themselves.
 | View | Purpose |
 | --- | --- |
 | **Ops triage queue** (default) | Every `Issue` and `Check` row across the whole fleet, one line each. Filter by property, status, action type and battery class; free-text search across room, device, action and notes; every column sorts. This doubles as the consolidated diagnostic register. |
-| **Fleet rollup** | One card per property: installed / reporting / silent, the Ok-Issue-Check mix, a heartbeat-age histogram, battery distribution, and a prominent colour-coded **freshness badge** showing how old that property's data actually is. |
+| **All rooms** | The same table over all rooms rather than only the problem ones, so a room that is currently `Ok` can still be looked up. Same filters, with `Ok` added to the status choices. |
+| **Fleet rollup** | One card per property: installed / reporting / silent, the Ok-Issue-Check mix, an **Issue trend** sparkline, a heartbeat-age histogram, battery distribution, and a prominent colour-coded **freshness badge** showing how old that property's data actually is. |
 | **Reconciliation** | Where the three sources disagree: ghosts, unregistered reporters, room/device mismatches, telemetry from unlisted rooms, duplicated room rows, and per-property caveats. |
+
+### Sharing a view
+
+Filters, search and sort are kept in the address bar, so a filtered view is a
+link. Copy the URL after filtering and the recipient sees the same rows —
+`?v=triage&prop=6178&action=Battery` is 6178's battery worklist.
+
+**Export CSV** downloads exactly what is on screen — same filters, same order —
+for a printable worklist rather than a webpage.
+
+### Reading "Last checked"
+
+The triage and all-rooms tables carry a **Last checked** column: the moment
+that property's telemetry was last exported.
+
+This matters because **days-silent is counted from that moment, not from
+today.** A row reading `14d` silent against a `Last checked` of 52 days ago
+means the device had been quiet for 14 days as of seven weeks ago. The column
+is colour-coded on the same scale as the freshness badge, so a stale reference
+point is visible on the row itself.
 
 ---
 
@@ -52,10 +73,18 @@ way you would treat the sheets themselves.
          ▼
   ┌──────────────┐
   │  render.js   │  asserts its own invariants, then injects the payload
-  │  template.html  into one self-contained page → dist/index.html
-  └──────┬───────┘
+  │  template.html  (+ history/ + the inlined logo) into one self-contained
+  └──────┬───────┘  page → dist/index.html
          ▼
      Netlify (runs `node build.js`, publishes `dist/`)
+
+
+  Trend capture runs separately, in GitHub Actions rather than on Netlify,
+  because only Actions can commit back to the repository:
+
+     snapshot.js ──▶ history/YYYY-MM-DD.json ──▶ committed to main
+                                                      │
+                     render.js reads history/ on the next build ◀┘
 ```
 
 `build.js` is the orchestrator: **fetch → normalize → render**. Any stage that
@@ -126,6 +155,42 @@ where `$NETLIFY_BUILD_HOOK` is the build-hook URL from
 > credentials of any kind.
 
 ---
+
+## Trend history
+
+`snapshot.js` writes one small JSON file per day into `history/` — counts
+only, roughly 800 bytes, no room detail. The daily workflow commits it, and
+the next build turns the series into the Issue-trend sparkline on each rollup
+card. Two days are needed before a line appears; until then the card says it
+is still collecting.
+
+A same-day re-run overwrites that day's file rather than appending, so forcing
+extra refreshes never distorts the trend.
+
+To rebuild history locally without committing anything:
+
+```bash
+node fetch.js && node normalize.js && node snapshot.js
+```
+
+## When something breaks
+
+The build is deliberately all-or-nothing: if any workbook is missing,
+unshared, renamed or malformed, `fetch.js` fails and **nothing is
+published**. That is the right behaviour — a partial fleet hides problems —
+but it means a failure is quiet from the outside: the previous page stays up
+and simply stops getting newer.
+
+Two things make that visible:
+
+- **Netlify deploy notifications** email `operations@showerstream.net`
+  whenever a deploy fails, so a broken sheet link surfaces the same morning.
+- **The freshness badges and the "Page built" timestamp.** If "Page built" is
+  more than a day old, the daily refresh is not completing.
+
+Check a failure in the Netlify deploy log first — `fetch.js` names the
+property and the likely cause (404 = sheet ID changed, 403 = no longer
+publicly readable, missing tab = renamed sheet).
 
 ## Editing thresholds and property metadata
 

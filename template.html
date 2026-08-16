@@ -4,9 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#08a8ff">
 <title>Shower Stream - Fleet &amp; Ops</title>
+<link rel="icon" href="{{LOGO_DATA_URI}}">
+<link rel="apple-touch-icon" href="{{LOGO_DATA_URI}}">
 <style>
   :root {
+    /* Brand blue sampled from the Shower Stream mark. */
+    --brand: #08a8ff;
     --bg: #f6f7f9;
     --panel: #ffffff;
     --ink: #16191d;
@@ -14,7 +19,9 @@
     --ink-faint: #8a939d;
     --line: #dfe3e8;
     --line-soft: #eceff2;
-    --accent: #1f5fa9;
+    /* Brand blue is too light for small text on white, so links and the
+       active tab use a darkened form of it. The mark itself stays --brand. */
+    --accent: #0a72ad;
     --good-bg: #e3f5e9; --good-fg: #14622f; --good-line: #a9dcbb;
     --warn-bg: #fdf1d8; --warn-fg: #7a5210; --warn-line: #efcf8a;
     --bad-bg:  #fce6e6; --bad-fg:  #8f2020; --bad-line:  #eeb0b0;
@@ -30,7 +37,7 @@
       --ink-faint: #78828c;
       --line: #2e343a;
       --line-soft: #24292e;
-      --accent: #6aa6e8;
+      --accent: #4cc2ff;
       --good-bg: #16301f; --good-fg: #7fd3a0; --good-line: #2c5c3c;
       --warn-bg: #33280f; --warn-fg: #e8bf72; --warn-line: #5e4a1c;
       --bad-bg:  #351a1a; --bad-fg:  #f0a0a0; --bad-line:  #62312f;
@@ -52,10 +59,13 @@
   header {
     background: var(--panel);
     border-bottom: 1px solid var(--line);
-    padding: 12px 16px 10px;
+    border-top: 3px solid var(--brand);
+    padding: 11px 16px 10px;
     position: sticky; top: 0; z-index: 20;
   }
-  .hd-row { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .hd-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 9px; }
+  .brand img { width: 26px; height: 26px; display: block; flex: none; }
   h1 { font-size: 16px; letter-spacing: -0.01em; }
   h1 .sub { color: var(--ink-faint); font-weight: 400; }
   .built { margin-left: auto; font-size: 12px; color: var(--ink-soft); }
@@ -86,7 +96,7 @@
     padding: 10px 12px; border-bottom: 2px solid transparent; white-space: nowrap;
   }
   nav button:hover { color: var(--ink); }
-  nav button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+  nav button[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--brand); font-weight: 600; }
   nav .n {
     font-size: 11px; font-variant-numeric: tabular-nums;
     background: var(--flat-bg); color: var(--flat-fg);
@@ -108,8 +118,6 @@
     background: var(--bg); border: 1px solid var(--line);
     border-radius: 6px; padding: 6px 8px; min-width: 120px;
   }
-  /* No flex shorthand here: the parent label is a column flex container, so
-     a flex-basis would size the input vertically instead of horizontally. */
   input[type="search"] { width: 100%; min-width: 0; }
   .filters label.grow { flex: 1 1 240px; min-width: 0; }
   select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
@@ -118,6 +126,7 @@
     background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px;
   }
   .btn:hover { color: var(--ink); border-color: var(--ink-faint); }
+  .btn.primary { color: var(--accent); border-color: var(--accent); }
   .resultline { font-size: 12.5px; color: var(--ink-soft); margin-left: auto; font-variant-numeric: tabular-nums; }
 
   /* ---------- tables ---------- */
@@ -133,7 +142,8 @@
   thead th.sortable { cursor: pointer; user-select: none; }
   thead th.sortable:hover { color: var(--ink); }
   thead th .arrow { opacity: .4; font-size: 9px; }
-  thead th[aria-sort] .arrow { opacity: 1; color: var(--accent); }
+  thead th[aria-sort] { color: var(--accent); }
+  thead th[aria-sort] .arrow { opacity: 1; }
   tbody tr:last-child td { border-bottom: 0; }
   tbody tr:hover { background: var(--line-soft); }
   .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -144,10 +154,8 @@
     padding: 1px 7px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap;
   }
   .notecell { color: var(--ink-soft); font-size: 12.5px; max-width: 34ch; }
-  /* Keep desktop rows scannable; the full note is in the title attribute. */
   .notecell .clamp {
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
-    overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
   .empty { padding: 22px; text-align: center; color: var(--ink-faint); font-size: 13.5px; }
 
@@ -188,6 +196,12 @@
   .bar .bf { display: block; height: 100%; border-radius: 999px; }
   .bar .bn { text-align: right; font-variant-numeric: tabular-nums; color: var(--ink); }
 
+  .spark { display: flex; align-items: center; gap: 9px; }
+  .spark svg { display: block; flex: none; }
+  .spark .sd { font-size: 11.5px; color: var(--ink-soft); }
+  .spark .sd b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .collecting { font-size: 11.5px; color: var(--ink-faint); }
+
   .cardnote { margin-top: 9px; font-size: 11.5px; color: var(--ink-faint); border-top: 1px solid var(--line-soft); padding-top: 7px; }
 
   /* ---------- reconciliation ---------- */
@@ -202,9 +216,7 @@
   }
   .note .nb { font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 4px; height: fit-content; white-space: nowrap; }
   .note .nt { color: var(--ink-soft); }
-  .note .nt b { color: var(--ink); font-weight: 600; }
   .dup { font-size: 12.5px; color: var(--ink-soft); }
-  .dup li { margin-bottom: 2px; }
 
   footer { max-width: 1400px; margin: 0 auto; padding: 0 16px 30px; font-size: 11.5px; color: var(--ink-faint); }
   footer code { font-family: var(--mono); font-size: 11px; }
@@ -212,9 +224,6 @@
   /* ---------- phone ---------- */
   @media (max-width: 760px) {
     main { padding: 12px 10px 40px; }
-
-    /* The header carries four snapshot chips; pinning it would cost a third
-       of a phone screen before any data appears. Pin only the tab bar. */
     header { position: static; padding: 10px 12px 8px; }
     .built { margin-left: 0; flex-basis: 100%; }
     .chips { gap: 5px; }
@@ -223,12 +232,13 @@
     nav { padding: 0 6px; }
     nav button { padding: 9px 8px; font-size: 13px; }
     nav .n { margin-left: 4px; padding: 1px 5px; }
+
     .filters { padding: 9px; gap: 7px; }
     .filters label { flex: 1 1 130px; }
-    select, input[type="search"] { width: 100%; min-width: 0; }
+    select { width: 100%; min-width: 0; }
     .resultline { margin-left: 0; flex-basis: 100%; }
 
-    /* Tables collapse into one card per row, labels drawn from data-label. */
+    /* Rows become one card each, labels drawn from data-label. */
     .tablewrap { background: none; border: 0; border-radius: 0; overflow: visible; }
     table, tbody, tr, td { display: block; width: 100%; }
     thead { display: none; }
@@ -244,11 +254,9 @@
     }
     td.rowhead { padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--line-soft); }
     td.rowhead::before { display: none; }
-    /* On a phone the row is already a card, so show the whole note. */
     .notecell { max-width: none; }
     .notecell .clamp { display: block; -webkit-line-clamp: none; overflow: visible; }
     .freshness { margin-left: 0; width: 100%; text-align: left; }
-    .card-hd { gap: 7px; }
   }
 </style>
 </head>
@@ -256,7 +264,10 @@
 
 <header>
   <div class="hd-row">
-    <h1>Shower Stream <span class="sub">&middot; Fleet &amp; Ops</span></h1>
+    <div class="brand">
+      <img src="{{LOGO_DATA_URI}}" alt="Shower Stream" width="26" height="26">
+      <h1>Shower Stream <span class="sub">&middot; Fleet &amp; Ops</span></h1>
+    </div>
     <div class="built">Page built <span id="builtAt">&mdash;</span></div>
   </div>
   <div class="chips" id="snapChips"></div>
@@ -264,22 +275,21 @@
 
 <nav id="tabs" role="tablist">
   <button role="tab" data-view="triage" aria-selected="true">Triage queue<span class="n" id="nTriage"></span></button>
+  <button role="tab" data-view="rooms" aria-selected="false">All rooms<span class="n" id="nRooms"></span></button>
   <button role="tab" data-view="rollup" aria-selected="false">Fleet rollup</button>
   <button role="tab" data-view="recon" aria-selected="false">Reconciliation<span class="n" id="nRecon"></span></button>
 </nav>
 
 <main>
-  <section id="view-triage" role="tabpanel">
+  <!-- Triage and All rooms are the same table over different base rows, so
+       they share one filter bar and one renderer. -->
+  <section id="view-table" role="tabpanel">
     <div class="filters">
       <label>Property
         <select id="fProperty"><option value="">All</option></select>
       </label>
       <label>Status
-        <select id="fStatus">
-          <option value="">Issue + Check</option>
-          <option value="Issue">Issue only</option>
-          <option value="Check">Check only</option>
-        </select>
+        <select id="fStatus"></select>
       </label>
       <label>Action type
         <select id="fAction"><option value="">All</option></select>
@@ -297,25 +307,27 @@
         <input type="search" id="fSearch" placeholder="room, device, action, notes&hellip;" autocomplete="off">
       </label>
       <button class="btn" id="fClear" type="button">Clear</button>
-      <div class="resultline" id="triageCount"></div>
+      <button class="btn primary" id="fCsv" type="button">Export CSV</button>
+      <div class="resultline" id="rowCount"></div>
     </div>
     <div class="tablewrap">
-      <table id="triageTable">
+      <table id="mainTable">
         <thead>
           <tr>
-            <th class="sortable" data-key="property">Prop <span class="arrow">&#9650;&#9660;</span></th>
-            <th class="sortable" data-key="room">Room <span class="arrow">&#9650;&#9660;</span></th>
-            <th class="sortable" data-key="deviceName">Device <span class="arrow">&#9650;&#9660;</span></th>
-            <th class="sortable" data-key="status">Status <span class="arrow">&#9650;&#9660;</span></th>
-            <th class="sortable" data-key="daysSilent">Days silent <span class="arrow">&#9650;&#9660;</span></th>
-            <th class="sortable" data-key="battery">Battery <span class="arrow">&#9650;&#9660;</span></th>
-            <th class="sortable" data-key="actionItem">Action item <span class="arrow">&#9650;&#9660;</span></th>
+            <th class="sortable" data-key="property">Prop <span class="arrow">&#8645;</span></th>
+            <th class="sortable" data-key="room">Room <span class="arrow">&#8645;</span></th>
+            <th class="sortable" data-key="deviceName">Device <span class="arrow">&#8645;</span></th>
+            <th class="sortable" data-key="status">Status <span class="arrow">&#8645;</span></th>
+            <th class="sortable" data-key="daysSilent">Days silent <span class="arrow">&#8645;</span></th>
+            <th class="sortable" data-key="battery">Battery <span class="arrow">&#8645;</span></th>
+            <th class="sortable" data-key="actionItem">Action item <span class="arrow">&#8645;</span></th>
+            <th class="sortable" data-key="lastChecked">Last checked <span class="arrow">&#8645;</span></th>
             <th>Notes</th>
           </tr>
         </thead>
-        <tbody id="triageBody"></tbody>
+        <tbody id="tableBody"></tbody>
       </table>
-      <div class="empty" id="triageEmpty" hidden>No rows match these filters.</div>
+      <div class="empty" id="tableEmpty" hidden>No rows match these filters.</div>
     </div>
   </section>
 
@@ -332,7 +344,8 @@
 <footer>
   Internal ops tool &middot; fleet health and triage only (savings metrics live elsewhere) &middot;
   read-only view of the source sheets &middot; unlisted, not indexed.
-  Thresholds and property names are edited in <code>config.js</code>.
+  &ldquo;Last checked&rdquo; is when that property&rsquo;s telemetry was last exported &mdash; days-silent is
+  counted from that moment, not from today. Thresholds and property names are edited in <code>config.js</code>.
 </footer>
 
 <script type="application/json" id="payload">{{DATA_JSON}}</script>
@@ -344,6 +357,11 @@
   var TH = DATA.thresholds;
   var DAY = 86400000;
   var NOW = Date.now();
+
+  var ALL_ROOMS = DATA.rooms;
+  // The triage queue is derived here rather than shipped separately, so the
+  // two views can never disagree about what counts as needing attention.
+  var TRIAGE = ALL_ROOMS.filter(function (r) { return r.status === 'Issue' || r.status === 'Check'; });
 
   // ---------------------------------------------------------------- helpers
   function esc(s) {
@@ -357,7 +375,7 @@
          : t === 'bad' ? 'var(--bad-fg)' : 'var(--flat-fg)';
   }
   function fmtDays(d) {
-    if (d === null || d === undefined) return '&mdash;';
+    if (d === null || d === undefined) return '—';
     if (d < 1) return (Math.round(d * 24) || 0) + 'h';
     if (d < 10) return d.toFixed(1) + 'd';
     return Math.round(d) + 'd';
@@ -365,18 +383,26 @@
   function fmtDateTime(iso) {
     if (!iso) return '—';
     var d = new Date(iso);
-    if (isNaN(d)) return '—';
-    return d.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    return isNaN(d) ? '—' : d.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   }
   function fmtDate(iso) {
     if (!iso) return '—';
     var d = new Date(iso);
-    if (isNaN(d)) return '—';
-    return d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+    return isNaN(d) ? '—' : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+  function fmtDateShort(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    return isNaN(d) ? '—' : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+  function ageDays(iso) {
+    if (!iso) return null;
+    var d = new Date(iso);
+    return isNaN(d) ? null : (NOW - d.getTime()) / DAY;
   }
 
-  /* Freshness is recomputed in the browser rather than baked in at build
-     time, so a page left open overnight still reports an honest age. */
+  /* Freshness is computed in the browser, not baked in, so a page left open
+     overnight still reports an honest age. */
   function bucketFor(days, group) {
     if (days === null || days === undefined) return group.neverBucket || null;
     for (var i = 0; i < group.buckets.length; i++) {
@@ -384,10 +410,6 @@
       if (b.maxDays === null || days < b.maxDays) return b;
     }
     return group.buckets[group.buckets.length - 1];
-  }
-  function snapshotAge(p) {
-    if (!p.snapshot.currentTime) return null;
-    return (NOW - new Date(p.snapshot.currentTime).getTime()) / DAY;
   }
 
   var BATTERY_TONES = { ok: 'good', warn: 'warn', critical: 'bad', unknown: 'flat', unclassified: 'flat' };
@@ -401,7 +423,8 @@
 
   // ---------------------------------------------------------------- header
   document.getElementById('builtAt').textContent = fmtDateTime(DATA.builtAt);
-  document.getElementById('nTriage').textContent = DATA.triage.length;
+  document.getElementById('nTriage').textContent = TRIAGE.length;
+  document.getElementById('nRooms').textContent = ALL_ROOMS.length;
 
   var R = DATA.reconciliation;
   var reconTotal = R.ghosts.length + R.unregisteredReporters.length + R.roomDeviceMismatches.length
@@ -409,7 +432,7 @@
   document.getElementById('nRecon').textContent = reconTotal;
 
   document.getElementById('snapChips').innerHTML = DATA.properties.map(function (p) {
-    var age = snapshotAge(p);
+    var age = ageDays(p.snapshot.currentTime);
     var b = bucketFor(age, TH.snapshotFreshness);
     return '<span class="chip ' + toneClass(b ? b.tone : 'flat') + '" title="Export snapshot '
       + esc(fmtDateTime(p.snapshot.currentTime)) + '">'
@@ -417,17 +440,19 @@
       + ' <span class="age">&middot; ' + fmtDays(age) + '<span class="lbl"> old</span></span></span>';
   }).join('');
 
-  // ---------------------------------------------------------------- triage
-  var state = { sortKey: null, sortDir: 1 };
+  // ------------------------------------------------------------ table view
+  var scope = 'triage';
+  var state = { property: '', status: '', action: '', battery: '', q: '', sortKey: null, sortDir: 1 };
+
   var els = {
     property: document.getElementById('fProperty'),
     status: document.getElementById('fStatus'),
     action: document.getElementById('fAction'),
     battery: document.getElementById('fBattery'),
     search: document.getElementById('fSearch'),
-    body: document.getElementById('triageBody'),
-    count: document.getElementById('triageCount'),
-    empty: document.getElementById('triageEmpty')
+    body: document.getElementById('tableBody'),
+    count: document.getElementById('rowCount'),
+    empty: document.getElementById('tableEmpty')
   };
 
   DATA.properties.forEach(function (p) {
@@ -437,21 +462,37 @@
     els.property.appendChild(o);
   });
   var actionTypes = [];
-  DATA.triage.forEach(function (r) { if (actionTypes.indexOf(r.actionType) === -1) actionTypes.push(r.actionType); });
+  ALL_ROOMS.forEach(function (r) { if (r.actionType && actionTypes.indexOf(r.actionType) === -1) actionTypes.push(r.actionType); });
   actionTypes.sort().forEach(function (a) {
     var o = document.createElement('option');
     o.value = a; o.textContent = a;
     els.action.appendChild(o);
   });
 
+  /* The status choices differ by scope: the triage queue is Issue+Check by
+     definition, while All rooms can also show Ok. */
+  function buildStatusOptions() {
+    var opts = scope === 'triage'
+      ? [['', 'Issue + Check'], ['Issue', 'Issue only'], ['Check', 'Check only']]
+      : [['', 'All statuses'], ['Issue', 'Issue'], ['Check', 'Check'], ['Ok', 'Ok']];
+    var keep = state.status;
+    els.status.innerHTML = opts.map(function (o) {
+      return '<option value="' + o[0] + '">' + o[1] + '</option>';
+    }).join('');
+    // "Ok" is meaningless in the triage scope; drop it rather than show zero rows.
+    if (opts.some(function (o) { return o[0] === keep; })) els.status.value = keep;
+    else { els.status.value = ''; state.status = ''; }
+  }
+
+  function baseRows() { return scope === 'triage' ? TRIAGE : ALL_ROOMS; }
+
   function filtered() {
-    var prop = els.property.value, st = els.status.value, act = els.action.value,
-        bat = els.battery.value, q = els.search.value.trim().toLowerCase();
-    var rows = DATA.triage.filter(function (r) {
-      if (prop && r.property !== prop) return false;
-      if (st && r.status !== st) return false;
-      if (act && r.actionType !== act) return false;
-      if (bat && r.batteryClass !== bat) return false;
+    var q = state.q.trim().toLowerCase();
+    var rows = baseRows().filter(function (r) {
+      if (state.property && r.property !== state.property) return false;
+      if (state.status && r.status !== state.status) return false;
+      if (state.action && r.actionType !== state.action) return false;
+      if (state.battery && r.batteryClass !== state.battery) return false;
       if (q) {
         var hay = [r.room, r.deviceName, r.deviceId, r.actionItem, r.notes, r.propertyName, r.property]
           .filter(Boolean).join(' ').toLowerCase();
@@ -463,55 +504,130 @@
       var k = state.sortKey, dir = state.sortDir;
       rows = rows.slice().sort(function (a, b) {
         var x = a[k], y = b[k];
-        if (x === null || x === undefined) return 1;      // blanks always last
+        if (x === null || x === undefined) return 1;   // blanks always last
         if (y === null || y === undefined) return -1;
         if (typeof x === 'number' && typeof y === 'number') return (x - y) * dir;
         return String(x).localeCompare(String(y), undefined, { numeric: true }) * dir;
+      });
+    } else {
+      // Default: worst first - Issue before Check before Ok, then longest silent.
+      var rank = { Issue: 0, Check: 1, Ok: 2 };
+      rows = rows.slice().sort(function (a, b) {
+        var ra = rank[a.status] === undefined ? 3 : rank[a.status];
+        var rb = rank[b.status] === undefined ? 3 : rank[b.status];
+        if (ra !== rb) return ra - rb;
+        return (b.daysSilent === null ? -1 : b.daysSilent) - (a.daysSilent === null ? -1 : a.daysSilent);
       });
     }
     return rows;
   }
 
-  function renderTriage() {
-    var rows = filtered();
-    els.count.textContent = rows.length + ' of ' + DATA.triage.length + ' rows';
-    els.empty.hidden = rows.length > 0;
-    els.body.innerHTML = rows.map(function (r) {
-      var hb = hbBucketMeta(r.heartbeatBucket);
-      var batTone = BATTERY_TONES[r.batteryClass] || 'flat';
-      return '<tr>'
-        + '<td class="rowhead" data-label="Prop"><b>' + esc(r.property) + '</b> <span class="muted">' + esc(r.propertyName) + '</span></td>'
-        + '<td class="num" data-label="Room"><b>' + esc(r.room) + '</b></td>'
-        + '<td class="mono" data-label="Device">' + (r.deviceName ? esc(r.deviceName) : '<span class="muted">—</span>') + '</td>'
-        + '<td data-label="Status"><span class="pill ' + toneClass(STATUS_TONES[r.status] || 'flat') + '">' + esc(r.status) + '</span></td>'
-        + '<td class="num" data-label="Days silent" title="' + esc(hb.label) + ' · last heartbeat ' + esc(fmtDateTime(r.lastHeartbeat)) + '">'
-          + '<span style="color:' + toneVar(hb.tone) + ';font-weight:600">' + fmtDays(r.daysSilent) + '</span></td>'
-        + '<td class="num" data-label="Battery" title="' + esc(BATTERY_LABELS[r.batteryClass] || '') + '">'
-          + (r.battery === null
-              ? '<span class="muted">—</span>'
-              : '<span style="color:' + toneVar(batTone) + ';font-weight:600">' + r.battery.toFixed(2) + '&thinsp;V</span>')
-          + '</td>'
-        + '<td data-label="Action">' + (r.actionItem ? esc(r.actionItem) : '<span class="muted">—</span>') + '</td>'
-        + '<td class="notecell" data-label="Notes"' + (r.notes ? ' title="' + esc(r.notes) + '"' : '') + '>'
-          + (r.notes ? '<span class="clamp">' + esc(r.notes) + '</span>' : '') + '</td>'
-        + '</tr>';
-    }).join('');
+  function rowHtml(r) {
+    var hb = hbBucketMeta(r.heartbeatBucket);
+    var batTone = BATTERY_TONES[r.batteryClass] || 'flat';
+    var checkAge = ageDays(r.lastChecked);
+    var checkBucket = bucketFor(checkAge, TH.snapshotFreshness);
+    return '<tr>'
+      + '<td class="rowhead" data-label="Prop"><b>' + esc(r.property) + '</b> <span class="muted">' + esc(r.propertyName) + '</span></td>'
+      + '<td class="num" data-label="Room"><b>' + esc(r.room) + '</b></td>'
+      + '<td class="mono" data-label="Device">' + (r.deviceName ? esc(r.deviceName) : '<span class="muted">—</span>') + '</td>'
+      + '<td data-label="Status"><span class="pill ' + toneClass(STATUS_TONES[r.status] || 'flat') + '">' + esc(r.status) + '</span></td>'
+      + '<td class="num" data-label="Days silent" title="' + esc(hb.label) + ' · last heartbeat ' + esc(fmtDateTime(r.lastHeartbeat)) + '">'
+        + '<span style="color:' + toneVar(hb.tone) + ';font-weight:600">' + fmtDays(r.daysSilent) + '</span></td>'
+      + '<td class="num" data-label="Battery" title="' + esc(BATTERY_LABELS[r.batteryClass] || '') + '">'
+        + (r.battery === null
+            ? '<span class="muted">—</span>'
+            : '<span style="color:' + toneVar(batTone) + ';font-weight:600">' + r.battery.toFixed(2) + '&thinsp;V</span>')
+        + '</td>'
+      + '<td data-label="Action">' + (r.actionItem ? esc(r.actionItem) : '<span class="muted">—</span>') + '</td>'
+      + '<td class="num" data-label="Last checked" title="Telemetry for ' + esc(r.property) + ' was last exported '
+        + esc(fmtDateTime(r.lastChecked)) + '. Days silent is counted from then.">'
+        + '<span style="color:' + toneVar(checkBucket ? checkBucket.tone : 'flat') + '">' + esc(fmtDateShort(r.lastChecked)) + '</span>'
+        + ' <span class="muted">' + (checkAge === null ? '' : '· ' + fmtDays(checkAge)) + '</span></td>'
+      + '<td class="notecell" data-label="Notes"' + (r.notes ? ' title="' + esc(r.notes) + '"' : '') + '>'
+        + (r.notes ? '<span class="clamp">' + esc(r.notes) + '</span>' : '') + '</td>'
+      + '</tr>';
+  }
+
+  var currentRows = [];
+  function renderTable() {
+    currentRows = filtered();
+    var total = baseRows().length;
+    els.count.textContent = currentRows.length + ' of ' + total + ' rows';
+    els.empty.hidden = currentRows.length > 0;
+    els.body.innerHTML = currentRows.map(rowHtml).join('');
+    updateSortIndicators();
+  }
+
+  // --------------------------------------------------------- URL state
+  /* Filter state lives in the query string so a filtered view can be sent to
+     someone as a link - "here is 6178's battery list" - instead of described. */
+  var PARAM = { property: 'prop', status: 'status', action: 'action', battery: 'batt', q: 'q' };
+
+  /* Opened straight from disk (file://) or from a data: URL, replaceState
+     throws a SecurityError. The page must still work in that case - it is
+     how the build gets spot-checked locally - so failing to update the
+     address bar is silently accepted rather than thrown. */
+  var urlStateWorks = true;
+
+  function writeUrl() {
+    if (!urlStateWorks) return;
+    var u = new URLSearchParams();
+    u.set('v', scope);
+    Object.keys(PARAM).forEach(function (k) { if (state[k]) u.set(PARAM[k], state[k]); });
+    if (state.sortKey) { u.set('sort', state.sortKey); u.set('dir', state.sortDir === 1 ? 'asc' : 'desc'); }
+    var qs = u.toString();
+    try {
+      history.replaceState(null, '', qs ? '?' + qs : location.pathname);
+    } catch (e) {
+      urlStateWorks = false; // stop retrying on every keystroke
+    }
+  }
+
+  function readUrl() {
+    var u = new URLSearchParams(location.search);
+    var v = u.get('v');
+    // Legacy hash links (#rollup) still work.
+    if (!v && location.hash) v = location.hash.slice(1);
+    Object.keys(PARAM).forEach(function (k) { state[k] = u.get(PARAM[k]) || ''; });
+    state.sortKey = u.get('sort') || null;
+    state.sortDir = u.get('dir') === 'desc' ? -1 : 1;
+    return v && views[v] ? v : 'triage';
+  }
+
+  function syncControlsFromState() {
+    els.property.value = state.property;
+    els.action.value = state.action;
+    els.battery.value = state.battery;
+    els.search.value = state.q;
+    buildStatusOptions();
+  }
+
+  function onFilterChange() {
+    state.property = els.property.value;
+    state.status = els.status.value;
+    state.action = els.action.value;
+    state.battery = els.battery.value;
+    state.q = els.search.value;
+    renderTable();
+    writeUrl();
   }
 
   ['change', 'input'].forEach(function (ev) {
     [els.property, els.status, els.action, els.battery, els.search].forEach(function (el) {
-      el.addEventListener(ev, renderTriage);
+      el.addEventListener(ev, onFilterChange);
     });
   });
+
   document.getElementById('fClear').addEventListener('click', function () {
-    els.property.value = ''; els.status.value = ''; els.action.value = '';
-    els.battery.value = ''; els.search.value = '';
+    state.property = state.status = state.action = state.battery = state.q = '';
     state.sortKey = null; state.sortDir = 1;
-    updateSortIndicators();
-    renderTriage();
+    syncControlsFromState();
+    renderTable();
+    writeUrl();
   });
 
-  var headCells = document.querySelectorAll('#triageTable thead th.sortable');
+  var headCells = document.querySelectorAll('#mainTable thead th.sortable');
   function updateSortIndicators() {
     headCells.forEach(function (th) {
       if (th.dataset.key === state.sortKey) th.setAttribute('aria-sort', state.sortDir === 1 ? 'ascending' : 'descending');
@@ -523,9 +639,50 @@
       var k = th.dataset.key;
       if (state.sortKey === k) state.sortDir = -state.sortDir;
       else { state.sortKey = k; state.sortDir = (k === 'daysSilent' || k === 'battery') ? -1 : 1; }
-      updateSortIndicators();
-      renderTriage();
+      renderTable();
+      writeUrl();
     });
+  });
+
+  // --------------------------------------------------------------- CSV
+  /* Exports exactly what is on screen - same filters, same order - so a tech
+     can carry the worklist rather than the webpage. */
+  var CSV_COLS = [
+    ['Property', function (r) { return r.property; }],
+    ['Property name', function (r) { return r.propertyName; }],
+    ['Room', function (r) { return r.room; }],
+    ['Device', function (r) { return r.deviceName; }],
+    ['Particle ID', function (r) { return r.deviceId; }],
+    ['Status', function (r) { return r.status; }],
+    ['Days silent', function (r) { return r.daysSilent; }],
+    ['Last heartbeat', function (r) { return r.lastHeartbeat; }],
+    ['Battery V', function (r) { return r.battery; }],
+    ['Battery class', function (r) { return r.batteryClass; }],
+    ['Action item', function (r) { return r.actionItem; }],
+    ['Last checked', function (r) { return r.lastChecked; }],
+    ['Notes', function (r) { return r.notes; }]
+  ];
+  function csvCell(v) {
+    if (v === null || v === undefined) return '';
+    var s = String(v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+  document.getElementById('fCsv').addEventListener('click', function () {
+    var lines = [CSV_COLS.map(function (c) { return csvCell(c[0]); }).join(',')];
+    currentRows.forEach(function (r) {
+      lines.push(CSV_COLS.map(function (c) { return csvCell(c[1](r)); }).join(','));
+    });
+    // BOM so Excel opens UTF-8 correctly.
+    var blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    var stamp = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = 'shower-stream-' + scope + '-' + stamp + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   });
 
   // ---------------------------------------------------------------- rollup
@@ -549,9 +706,44 @@
     }).join('') + '</div>';
   }
 
+  /* One line per property showing Issue count over time. Needs two points to
+     mean anything; below that the card says it is still collecting. */
+  function sparkline(code) {
+    var pts = [];
+    DATA.history.forEach(function (h) {
+      var p = h.properties && h.properties[code];
+      if (p) pts.push({ date: h.date, issue: p.issue });
+    });
+    if (pts.length < 2) {
+      return '<div class="collecting">Collecting &mdash; ' + pts.length + ' day'
+        + (pts.length === 1 ? '' : 's') + ' recorded. A trend appears once the daily refresh has run twice.</div>';
+    }
+    var w = 132, h = 30, pad = 2;
+    var vals = pts.map(function (p) { return p.issue; });
+    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    var span = (max - min) || 1;
+    var d = pts.map(function (p, i) {
+      var x = pad + (i / (pts.length - 1)) * (w - pad * 2);
+      var y = h - pad - ((p.issue - min) / span) * (h - pad * 2);
+      return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
+    }).join(' ');
+    var first = vals[0], last = vals[vals.length - 1];
+    var delta = last - first;
+    var tone = delta > 0 ? 'bad' : delta < 0 ? 'good' : 'flat';
+    var arrow = delta > 0 ? '▲' : delta < 0 ? '▼' : '—';
+    return '<div class="spark">'
+      + '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" aria-hidden="true">'
+        + '<path d="' + d + '" fill="none" stroke="var(--brand)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>'
+      + '</svg>'
+      + '<div class="sd"><b>' + last + '</b> issues '
+      + '<span style="color:' + toneVar(tone) + '">' + arrow + ' ' + (delta === 0 ? 'flat' : Math.abs(delta)) + '</span>'
+      + '<br><span class="muted">over ' + pts.length + ' days</span></div>'
+      + '</div>';
+  }
+
   document.getElementById('cards').innerHTML = DATA.properties.map(function (p) {
     var c = p.counts;
-    var age = snapshotAge(p);
+    var age = ageDays(p.snapshot.currentTime);
     var fb = bucketFor(age, TH.snapshotFreshness);
 
     var mix = [
@@ -575,12 +767,8 @@
     if (!p.hasRegistry) notes.push('No registry tab &mdash; triage and telemetry only, cannot be reconciled.');
     else notes.push(c.registryDevices + ' device' + (c.registryDevices === 1 ? '' : 's') + ' registered against ' + c.rooms + ' rooms'
       + (c.registryInventoryOnly ? ' (plus ' + c.registryInventoryOnly + ' registry rows with no room assigned)' : '') + '.');
-    if (c.rooms !== c.distinctRooms) {
-      notes.push(c.rooms + ' rows cover ' + c.distinctRooms + ' distinct rooms &mdash; some rooms appear twice.');
-    }
-    if (p.snapshot.labelMatchesSnapshot === false) {
-      notes.push('Sheet header says &ldquo;' + esc(p.snapshot.headerLabel) + '&rdquo;; badge uses the export timestamp.');
-    }
+    if (c.rooms !== c.distinctRooms) notes.push(c.rooms + ' rows cover ' + c.distinctRooms + ' distinct rooms &mdash; some rooms appear twice.');
+    if (p.snapshot.labelMatchesSnapshot === false) notes.push('Sheet header says &ldquo;' + esc(p.snapshot.headerLabel) + '&rdquo;; badge uses the export timestamp.');
     if (!TH.batteryVoltage.confirmed) notes.push('Battery cutoffs unconfirmed &mdash; voltages shown unclassified.');
 
     return '<div class="card">'
@@ -599,6 +787,7 @@
         + '<div class="kpi"><div class="v" style="color:' + toneVar(c.silent ? 'bad' : 'flat') + '">' + c.silent + '</div><div class="l">Silent</div></div>'
       + '</div>'
       + '<div class="metric"><div class="mh">Status mix</div>' + stack(mix, c.rooms) + legend(mix) + '</div>'
+      + '<div class="metric"><div class="mh">Issue trend</div>' + sparkline(p.code) + '</div>'
       + '<div class="metric"><div class="mh">Heartbeat age</div>' + bars(hbParts, hbMax) + '</div>'
       + '<div class="metric"><div class="mh">Battery' + (TH.batteryVoltage.confirmed
           ? ' <span class="muted">(ok ≥' + TH.batteryVoltage.okAbove + 'V, warn ≥' + TH.batteryVoltage.warnAbove + 'V)</span>'
@@ -610,109 +799,117 @@
 
   // -------------------------------------------------------- reconciliation
   document.getElementById('reconNotes').innerHTML = R.notes.map(function (n) {
-    var tone = n.severity === 'warn' ? 'tone-warn' : 'tone-flat';
-    return '<div class="note"><span class="nb ' + tone + '">' + esc(n.property) + '</span>'
-      + '<span class="nt">' + esc(n.text) + '</span></div>';
+    return '<div class="note"><span class="nb ' + (n.severity === 'warn' ? 'tone-warn' : 'tone-flat') + '">'
+      + esc(n.property) + '</span><span class="nt">' + esc(n.text) + '</span></div>';
   }).join('');
 
   function table(cols, rows, rowFn) {
     if (!rows.length) return '<div class="tablewrap"><div class="empty">Nothing to reconcile here.</div></div>';
     return '<div class="tablewrap"><table><thead><tr>'
       + cols.map(function (c) { return '<th>' + esc(c) + '</th>'; }).join('')
-      + '</tr></thead><tbody>'
-      + rows.map(rowFn).join('')
-      + '</tbody></table></div>';
+      + '</tr></thead><tbody>' + rows.map(rowFn).join('') + '</tbody></table></div>';
   }
   function block(title, count, desc, html) {
     return '<div class="recon-block"><div class="recon-hd"><h2>' + esc(title) + '</h2>'
       + '<span class="n">' + count + '</span><p>' + desc + '</p></div>' + html + '</div>';
   }
+  function propCell(x) {
+    return '<td class="rowhead" data-label="Prop"><b>' + esc(x.property) + '</b> <span class="muted">' + esc(x.propertyName) + '</span></td>';
+  }
 
   var blocks = '';
-
   blocks += block('Ghosts', R.ghosts.length,
     'In the registry, never seen in telemetry. Either never came online, or was removed without the registry being updated.',
     table(['Prop', 'Room', 'Device', 'Particle ID', 'Installed', 'Registry notes'], R.ghosts, function (g) {
-      return '<tr>'
-        + '<td class="rowhead" data-label="Prop"><b>' + esc(g.property) + '</b> <span class="muted">' + esc(g.propertyName) + '</span></td>'
+      return '<tr>' + propCell(g)
         + '<td class="num" data-label="Room"><b>' + esc(g.room) + '</b></td>'
         + '<td class="mono" data-label="Device">' + esc(g.deviceName || '—') + '</td>'
         + '<td class="mono muted" data-label="Particle ID">' + esc(g.deviceId) + '</td>'
         + '<td class="num" data-label="Installed">' + esc(fmtDate(g.installDate)) + '</td>'
-        + '<td class="notecell" data-label="Notes">' + esc(g.notes || '') + '</td>'
-        + '</tr>';
+        + '<td class="notecell" data-label="Notes">' + esc(g.notes || '') + '</td></tr>';
     }));
 
   blocks += block('Unregistered reporters', R.unregisteredReporters.length,
     'Reporting telemetry but absent from the registry tab. These are real devices with no paperwork.',
     table(['Prop', 'Room', 'Particle ID', 'Last heartbeat'], R.unregisteredReporters, function (u) {
-      return '<tr>'
-        + '<td class="rowhead" data-label="Prop"><b>' + esc(u.property) + '</b> <span class="muted">' + esc(u.propertyName) + '</span></td>'
+      return '<tr>' + propCell(u)
         + '<td class="num" data-label="Room"><b>' + esc(u.room || '—') + '</b></td>'
         + '<td class="mono muted" data-label="Particle ID">' + esc(u.deviceId) + '</td>'
-        + '<td class="num" data-label="Last heartbeat">' + esc(fmtDate(u.lastHeartbeat)) + '</td>'
-        + '</tr>';
+        + '<td class="num" data-label="Last heartbeat">' + esc(fmtDate(u.lastHeartbeat)) + '</td></tr>';
     }));
 
   blocks += block('Room / device mismatches', R.roomDeviceMismatches.length,
     'The registry and the telemetry disagree about where a device is, or which device is in a room.',
     table(['Prop', 'What', 'Device', 'Registry says', 'Telemetry says'], R.roomDeviceMismatches, function (m) {
-      return '<tr>'
-        + '<td class="rowhead" data-label="Prop"><b>' + esc(m.property) + '</b> <span class="muted">' + esc(m.propertyName) + '</span></td>'
+      return '<tr>' + propCell(m)
         + '<td data-label="What">' + esc(m.kind) + '</td>'
         + '<td class="mono" data-label="Device">' + esc(m.deviceName || m.deviceId || '—') + '</td>'
         + '<td class="mono" data-label="Registry">' + esc(m.registryRoom || (m.registryDeviceId || '').slice(0, 12) || '—') + '</td>'
-        + '<td class="mono" data-label="Telemetry">' + esc(m.telemetryRoom || (m.telemetryDeviceId || '').slice(0, 12) || '—') + '</td>'
-        + '</tr>';
+        + '<td class="mono" data-label="Telemetry">' + esc(m.telemetryRoom || (m.telemetryDeviceId || '').slice(0, 12) || '—') + '</td></tr>';
     }));
 
   blocks += block('Reporting from an unlisted room', R.orphanTelemetryRooms.length,
     'Telemetry arrives from a room the triage sheet does not list as installed.',
     table(['Prop', 'Room', 'Particle ID', 'Last heartbeat'], R.orphanTelemetryRooms, function (o) {
-      return '<tr>'
-        + '<td class="rowhead" data-label="Prop"><b>' + esc(o.property) + '</b> <span class="muted">' + esc(o.propertyName) + '</span></td>'
+      return '<tr>' + propCell(o)
         + '<td class="num" data-label="Room"><b>' + esc(o.room) + '</b></td>'
         + '<td class="mono muted" data-label="Particle ID">' + esc(o.deviceId) + '</td>'
-        + '<td class="num" data-label="Last heartbeat">' + esc(fmtDate(o.lastHeartbeat)) + '</td>'
-        + '</tr>';
+        + '<td class="num" data-label="Last heartbeat">' + esc(fmtDate(o.lastHeartbeat)) + '</td></tr>';
     }));
 
   blocks += block('Duplicated room rows', R.duplicateRoomRows.length,
-    'One room occupying several Room Status rows, each with its own action item. All rows are kept in the triage queue.',
+    'One room occupying several Room Status rows, each with its own action item. All rows are kept in the queue.',
     table(['Prop', 'Room', 'Rows', 'Entries'], R.duplicateRoomRows, function (d) {
-      return '<tr>'
-        + '<td class="rowhead" data-label="Prop"><b>' + esc(d.property) + '</b> <span class="muted">' + esc(d.propertyName) + '</span></td>'
+      return '<tr>' + propCell(d)
         + '<td class="num" data-label="Room"><b>' + esc(d.room) + '</b></td>'
         + '<td class="num" data-label="Rows">' + d.count + '</td>'
         + '<td data-label="Entries"><ul class="dup" style="margin:0;padding-left:16px">'
-          + d.entries.map(function (e) {
-              return '<li>' + esc(e.status) + ' — ' + esc(e.actionItem || '—')
-                + (e.notes ? ' <span class="muted">(' + esc(e.notes) + ')</span>' : '') + '</li>';
-            }).join('')
-        + '</ul></td>'
-        + '</tr>';
+        + d.entries.map(function (e) {
+            return '<li>' + esc(e.status) + ' — ' + esc(e.actionItem || '—')
+              + (e.notes ? ' <span class="muted">(' + esc(e.notes) + ')</span>' : '') + '</li>';
+          }).join('')
+        + '</ul></td></tr>';
     }));
 
   document.getElementById('reconBlocks').innerHTML = blocks;
 
   // ------------------------------------------------------------------ tabs
-  var views = { triage: 'view-triage', rollup: 'view-rollup', recon: 'view-recon' };
-  function show(name) {
+  var views = {
+    triage: 'view-table',
+    rooms: 'view-table',
+    rollup: 'view-rollup',
+    recon: 'view-recon'
+  };
+
+  function show(name, skipUrl) {
     if (!views[name]) name = 'triage';
-    Object.keys(views).forEach(function (k) {
-      document.getElementById(views[k]).hidden = (k !== name);
+    var target = views[name];
+    ['view-table', 'view-rollup', 'view-recon'].forEach(function (id) {
+      document.getElementById(id).hidden = (id !== target);
     });
     document.querySelectorAll('#tabs button').forEach(function (b) {
       b.setAttribute('aria-selected', String(b.dataset.view === name));
     });
-    if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
+    if (name === 'triage' || name === 'rooms') {
+      if (scope !== name) {
+        scope = name;
+        buildStatusOptions();
+      }
+      renderTable();
+    }
+    if (!skipUrl) writeUrl();
   }
+
   document.querySelectorAll('#tabs button').forEach(function (b) {
     b.addEventListener('click', function () { show(b.dataset.view); });
   });
 
-  renderTriage();
-  show(location.hash.slice(1) || 'triage');
+  var initial = readUrl();
+  scope = (initial === 'rooms') ? 'rooms' : 'triage';
+  syncControlsFromState();
+  els.status.value = state.status;
+  show(initial, true);
+  writeUrl();
 })();
 </script>
 </body>

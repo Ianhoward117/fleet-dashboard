@@ -408,6 +408,10 @@ function normalize() {
         daysNoShower: round(t.daysNoShower, 1),
         actionItem: t.actionItem,
         actionType: actionType(t.actionItem),
+        // When this property's telemetry was last exported. Days-silent is
+        // measured against this instant, not against today, so showing it on
+        // every row is what makes the figure interpretable.
+        lastChecked: iso(currentTime),
         notes: t.notes,
         registered: Boolean(regRec),
         installDate: regRec ? iso(regRec.installDate) : null,
@@ -717,7 +721,37 @@ function report(data) {
   console.log(`\nNORMALIZE  wrote ${path.relative(__dirname, OUT_FILE)}`);
 }
 
-module.exports = { normalize, report, OUT_FILE };
+/**
+ * A compact, append-only record of one day's fleet state.
+ *
+ * Deliberately small - counts only, no room detail - because one of these is
+ * committed per day forever and the point is trend lines, not an archive.
+ * Roughly 500 bytes a day.
+ */
+function dailyRecord(data) {
+  const properties = {};
+  for (const p of data.properties) {
+    const c = p.counts;
+    properties[p.code] = {
+      rooms: c.rooms,
+      ok: c.ok,
+      issue: c.issue,
+      check: c.check,
+      reporting: c.reporting,
+      silent: c.silent,
+      snapshot: p.snapshot.currentTime ? p.snapshot.currentTime.slice(0, 10) : null,
+      battery: p.batteryHistogram,
+    };
+  }
+  return {
+    date: data.builtAt.slice(0, 10),
+    builtAt: data.builtAt,
+    triageRows: data.triage.length,
+    properties,
+  };
+}
+
+module.exports = { normalize, report, dailyRecord, OUT_FILE };
 
 if (require.main === module) {
   try {
