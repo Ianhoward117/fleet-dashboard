@@ -274,15 +274,14 @@
 </header>
 
 <nav id="tabs" role="tablist">
-  <button role="tab" data-view="triage" aria-selected="true">Triage queue<span class="n" id="nTriage"></span></button>
-  <button role="tab" data-view="rooms" aria-selected="false">All rooms<span class="n" id="nRooms"></span></button>
+  <button role="tab" data-view="rooms" aria-selected="true">All rooms<span class="n" id="nRooms"></span></button>
   <button role="tab" data-view="rollup" aria-selected="false">Fleet rollup</button>
   <button role="tab" data-view="recon" aria-selected="false">Reconciliation<span class="n" id="nRecon"></span></button>
 </nav>
 
 <main>
-  <!-- Triage and All rooms are the same table over different base rows, so
-       they share one filter bar and one renderer. -->
+  <!-- Every room, worst first. The status filter narrows this to the triage
+       queue when that is what you want. -->
   <section id="view-table" role="tabpanel">
     <div class="filters">
       <label>Property
@@ -359,9 +358,7 @@
   var NOW = Date.now();
 
   var ALL_ROOMS = DATA.rooms;
-  // The triage queue is derived here rather than shipped separately, so the
-  // two views can never disagree about what counts as needing attention.
-  var TRIAGE = ALL_ROOMS.filter(function (r) { return r.status === 'Issue' || r.status === 'Check'; });
+  var NEEDS_ATTENTION = function (r) { return r.status === 'Issue' || r.status === 'Check'; };
 
   // ---------------------------------------------------------------- helpers
   function esc(s) {
@@ -423,7 +420,6 @@
 
   // ---------------------------------------------------------------- header
   document.getElementById('builtAt').textContent = fmtDateTime(DATA.builtAt);
-  document.getElementById('nTriage').textContent = TRIAGE.length;
   document.getElementById('nRooms').textContent = ALL_ROOMS.length;
 
   var R = DATA.reconciliation;
@@ -441,7 +437,6 @@
   }).join('');
 
   // ------------------------------------------------------------ table view
-  var scope = 'triage';
   var state = { property: '', status: '', action: '', battery: '', q: '', sortKey: null, sortDir: 1 };
 
   var els = {
@@ -469,28 +464,30 @@
     els.action.appendChild(o);
   });
 
-  /* The status choices differ by scope: the triage queue is Issue+Check by
-     definition, while All rooms can also show Ok. */
+  /* "attention" is the old triage queue kept as a filter: one click narrows
+     the full room list to everything flagged Issue or Check. Counts are shown
+     so the size of the queue is visible without applying the filter. */
   function buildStatusOptions() {
-    var opts = scope === 'triage'
-      ? [['', 'Issue + Check'], ['Issue', 'Issue only'], ['Check', 'Check only']]
-      : [['', 'All statuses'], ['Issue', 'Issue'], ['Check', 'Check'], ['Ok', 'Ok']];
-    var keep = state.status;
+    var n = function (fn) { return ALL_ROOMS.filter(fn).length; };
+    var opts = [
+      ['', 'All statuses (' + ALL_ROOMS.length + ')'],
+      ['attention', 'Issue + Check (' + n(NEEDS_ATTENTION) + ')'],
+      ['Issue', 'Issue (' + n(function (r) { return r.status === 'Issue'; }) + ')'],
+      ['Check', 'Check (' + n(function (r) { return r.status === 'Check'; }) + ')'],
+      ['Ok', 'Ok (' + n(function (r) { return r.status === 'Ok'; }) + ')']
+    ];
     els.status.innerHTML = opts.map(function (o) {
       return '<option value="' + o[0] + '">' + o[1] + '</option>';
     }).join('');
-    // "Ok" is meaningless in the triage scope; drop it rather than show zero rows.
-    if (opts.some(function (o) { return o[0] === keep; })) els.status.value = keep;
-    else { els.status.value = ''; state.status = ''; }
+    els.status.value = opts.some(function (o) { return o[0] === state.status; }) ? state.status : '';
   }
-
-  function baseRows() { return scope === 'triage' ? TRIAGE : ALL_ROOMS; }
 
   function filtered() {
     var q = state.q.trim().toLowerCase();
-    var rows = baseRows().filter(function (r) {
+    var rows = ALL_ROOMS.filter(function (r) {
       if (state.property && r.property !== state.property) return false;
-      if (state.status && r.status !== state.status) return false;
+      if (state.status === 'attention') { if (!NEEDS_ATTENTION(r)) return false; }
+      else if (state.status && r.status !== state.status) return false;
       if (state.action && r.actionType !== state.action) return false;
       if (state.battery && r.batteryClass !== state.battery) return false;
       if (q) {
@@ -552,8 +549,7 @@
   var currentRows = [];
   function renderTable() {
     currentRows = filtered();
-    var total = baseRows().length;
-    els.count.textContent = currentRows.length + ' of ' + total + ' rows';
+    els.count.textContent = currentRows.length + ' of ' + ALL_ROOMS.length + ' rooms';
     els.empty.hidden = currentRows.length > 0;
     els.body.innerHTML = currentRows.map(rowHtml).join('');
     updateSortIndicators();
@@ -573,7 +569,7 @@
   function writeUrl() {
     if (!urlStateWorks) return;
     var u = new URLSearchParams();
-    u.set('v', scope);
+    u.set('v', currentView);
     Object.keys(PARAM).forEach(function (k) { if (state[k]) u.set(PARAM[k], state[k]); });
     if (state.sortKey) { u.set('sort', state.sortKey); u.set('dir', state.sortDir === 1 ? 'asc' : 'desc'); }
     var qs = u.toString();
@@ -592,7 +588,13 @@
     Object.keys(PARAM).forEach(function (k) { state[k] = u.get(PARAM[k]) || ''; });
     state.sortKey = u.get('sort') || null;
     state.sortDir = u.get('dir') === 'desc' ? -1 : 1;
-    return v && views[v] ? v : 'triage';
+    // Links saved while the separate triage tab existed still resolve: they
+    // land on the room list pre-filtered to everything needing attention.
+    if (v === 'triage') {
+      if (!state.status) state.status = 'attention';
+      return 'rooms';
+    }
+    return v && views[v] ? v : 'rooms';
   }
 
   function syncControlsFromState() {
@@ -600,7 +602,7 @@
     els.action.value = state.action;
     els.battery.value = state.battery;
     els.search.value = state.q;
-    buildStatusOptions();
+    els.status.value = state.status;
   }
 
   function onFilterChange() {
@@ -678,7 +680,12 @@
     var a = document.createElement('a');
     var stamp = new Date().toISOString().slice(0, 10);
     a.href = url;
-    a.download = 'shower-stream-' + scope + '-' + stamp + '.csv';
+    // Name the file after what was actually exported, not the tab.
+    var label = state.status === 'attention' ? 'issue-check'
+              : state.status ? state.status.toLowerCase()
+              : 'all-rooms';
+    if (state.property) label = state.property + '-' + label;
+    a.download = 'shower-stream-' + label + '-' + stamp + '.csv';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -875,14 +882,15 @@
 
   // ------------------------------------------------------------------ tabs
   var views = {
-    triage: 'view-table',
     rooms: 'view-table',
     rollup: 'view-rollup',
     recon: 'view-recon'
   };
+  var currentView = 'rooms';
 
   function show(name, skipUrl) {
-    if (!views[name]) name = 'triage';
+    if (!views[name]) name = 'rooms';
+    currentView = name;
     var target = views[name];
     ['view-table', 'view-rollup', 'view-recon'].forEach(function (id) {
       document.getElementById(id).hidden = (id !== target);
@@ -890,13 +898,7 @@
     document.querySelectorAll('#tabs button').forEach(function (b) {
       b.setAttribute('aria-selected', String(b.dataset.view === name));
     });
-    if (name === 'triage' || name === 'rooms') {
-      if (scope !== name) {
-        scope = name;
-        buildStatusOptions();
-      }
-      renderTable();
-    }
+    if (name === 'rooms') renderTable();
     if (!skipUrl) writeUrl();
   }
 
@@ -905,9 +907,8 @@
   });
 
   var initial = readUrl();
-  scope = (initial === 'rooms') ? 'rooms' : 'triage';
+  buildStatusOptions();
   syncControlsFromState();
-  els.status.value = state.status;
   show(initial, true);
   writeUrl();
 })();

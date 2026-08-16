@@ -18,24 +18,30 @@ way you would treat the sheets themselves.
 
 | View | Purpose |
 | --- | --- |
-| **Ops triage queue** (default) | Every `Issue` and `Check` row across the whole fleet, one line each. Filter by property, status, action type and battery class; free-text search across room, device, action and notes; every column sorts. This doubles as the consolidated diagnostic register. |
-| **All rooms** | The same table over all rooms rather than only the problem ones, so a room that is currently `Ok` can still be looked up. Same filters, with `Ok` added to the status choices. |
+| **All rooms** (default) | Every room in the fleet, one line each, sorted worst-first: `Issue`, then `Check`, then `Ok`, longest-silent first within each. Filter by property, status, action type and battery class; free-text search across room, device, action and notes; every column sorts. Selecting **Issue + Check** turns this into the ops triage queue, which is also the consolidated diagnostic register. |
 | **Fleet rollup** | One card per property: installed / reporting / silent, the Ok-Issue-Check mix, an **Issue trend** sparkline, a heartbeat-age histogram, battery distribution, and a prominent colour-coded **freshness badge** showing how old that property's data actually is. |
 | **Reconciliation** | Where the three sources disagree: ghosts, unregistered reporters, room/device mismatches, telemetry from unlisted rooms, duplicated room rows, and per-property caveats. |
+
+The status filter carries live counts — `Issue + Check (236)`, `Ok (185)` — so
+the size of the queue is visible without applying the filter.
 
 ### Sharing a view
 
 Filters, search and sort are kept in the address bar, so a filtered view is a
 link. Copy the URL after filtering and the recipient sees the same rows —
-`?v=triage&prop=6178&action=Battery` is 6178's battery worklist.
+`?v=rooms&prop=6178&status=attention` is 6178's work queue, and
+`?v=rooms&prop=6178&action=Battery` is its battery worklist.
+
+Links saved when a separate triage tab existed (`?v=triage`) still work: they
+open the room list pre-filtered to everything needing attention.
 
 **Export CSV** downloads exactly what is on screen — same filters, same order —
 for a printable worklist rather than a webpage.
 
 ### Reading "Last checked"
 
-The triage and all-rooms tables carry a **Last checked** column: the moment
-that property's telemetry was last exported.
+The room table carries a **Last checked** column: the moment that property's
+telemetry was last exported.
 
 This matters because **days-silent is counted from that moment, not from
 today.** A row reading `14d` silent against a `Last checked` of 52 days ago
