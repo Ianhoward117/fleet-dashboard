@@ -1,0 +1,71 @@
+{
+  "date": "2026-08-17",
+  "builtAt": "2026-08-17T11:28:48.686Z",
+  "triageRows": 236,
+  "properties": {
+    "6178": {
+      "rooms": 93,
+      "ok": 13,
+      "issue": 69,
+      "check": 11,
+      "reporting": 33,
+      "silent": 60,
+      "snapshot": "2026-06-24",
+      "battery": {
+        "ok": 14,
+        "warn": 11,
+        "critical": 4,
+        "unclassified": 0,
+        "unknown": 64
+      }
+    },
+    "6197": {
+      "rooms": 94,
+      "ok": 57,
+      "issue": 29,
+      "check": 8,
+      "reporting": 83,
+      "silent": 11,
+      "snapshot": "2026-08-10",
+      "battery": {
+        "ok": 62,
+        "warn": 7,
+        "critical": 11,
+        "unclassified": 0,
+        "unknown": 14
+      }
+    },
+    "9502": {
+      "rooms": 116,
+      "ok": 78,
+      "issue": 23,
+      "check": 15,
+      "reporting": 107,
+      "silent": 9,
+      "snapshot": "2026-07-14",
+      "battery": {
+        "ok": 86,
+        "warn": 9,
+        "critical": 11,
+        "unclassified": 0,
+        "unknown": 10
+      }
+    },
+    "9829": {
+      "rooms": 118,
+      "ok": 37,
+      "issue": 76,
+      "check": 5,
+      "reporting": 118,
+      "silent": 0,
+      "snapshot": "2026-07-31",
+      "battery": {
+        "ok": 37,
+        "warn": 31,
+        "critical": 16,
+        "unclassified": 0,
+        "unknown": 34
+      }
+    }
+  }
+}
