@@ -4,8 +4,9 @@
  * Stage 1 of the pipeline: pull every source workbook down to data/raw/.
  *
  * This stage is deliberately paranoid. A fleet dashboard that silently
- * renders three of four properties is worse than one that fails, because
- * a missing property looks exactly like a property with nothing wrong.
+ * renders all but one of its properties is worse than one that fails,
+ * because a missing property looks exactly like a property with nothing
+ * wrong.
  * So: any download error, any non-xlsx payload, any workbook missing the
  * tabs we depend on, and the whole build stops here with a loud message.
  *

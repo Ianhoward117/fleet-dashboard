@@ -14,6 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { PROPERTIES } = require('./config');
 
 const DATA_FILE = path.join(__dirname, 'data', 'normalized.json');
 const TEMPLATE_FILE = path.join(__dirname, 'template.html');
@@ -39,7 +40,20 @@ function loadHistory() {
     }
   }
   // Keep the page light: a rolling window is enough to see a direction.
-  return records.slice(-90);
+  // Also drop per-property blocks for properties no longer in config: history
+  // files are an immutable record and keep them, but a removed property has no
+  // card on the page, so shipping its old counts is dead weight in the payload
+  // (and leaves a decommissioned property named in a page that should not
+  // mention it). Fleet-level fields on each record are left exactly as recorded.
+  const live = new Set(PROPERTIES.map((p) => p.code));
+  return records.slice(-90).map((rec) => {
+    if (!rec || !rec.properties) return rec;
+    const properties = {};
+    for (const [code, counts] of Object.entries(rec.properties)) {
+      if (live.has(code)) properties[code] = counts;
+    }
+    return { ...rec, properties };
+  });
 }
 
 /** Inline the logo so the published page still makes zero external requests. */
@@ -133,8 +147,8 @@ function render() {
   assertSane(data);
 
   // Ship one flat array of every room and let the browser derive the triage
-  // queue from it. Sending both would duplicate the 236 triage rows inside
-  // the 421 room rows for no benefit.
+  // queue from it. Sending both would duplicate every triage row inside the
+  // room rows for no benefit.
   //
   // Only the fields the page actually reads are sent. roomKey is an internal
   // join key, and the shower/registry columns are not shown anywhere; all of
