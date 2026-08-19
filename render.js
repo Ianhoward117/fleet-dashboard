@@ -129,9 +129,31 @@ function assertSane(data) {
   // registry tab name rather than the bare number, because a bare "9829"
   // would false-positive on any device id that happens to contain those hex
   // digits.
-  const blob = JSON.stringify(data);
+  //
+  // One field is allowed to name those tabs: alsoInExcludedTabs, the
+  // provenance annotation on a live-but-unmapped device that carries a
+  // current property group. Rather than weaken the check, strip that field
+  // and then scan everything else - and separately assert the field is only
+  // ever used the one way it is permitted to be used.
+  const scrubbed = JSON.parse(JSON.stringify(data));
+  for (const row of (scrubbed.reconciliation && scrubbed.reconciliation.liveButUnmapped) || []) {
+    delete row.alsoInExcludedTabs;
+  }
+  const blob = JSON.stringify(scrubbed);
   for (const banned of ['The Lab', 'Fort Custer', 'ESA 9829']) {
     if (blob.includes(banned)) problems.push(`out-of-scope site "${banned}" appears in the payload`);
+  }
+
+  // The annotation is only legitimate on a device whose current group ties it
+  // to a live property. Anything else means the exclusion filter leaked.
+  const liveCodes = new Set(data.properties.map((p) => p.code));
+  for (const row of (data.reconciliation && data.reconciliation.liveButUnmapped) || []) {
+    if (row.alsoInExcludedTabs && row.alsoInExcludedTabs.length && !liveCodes.has(row.property)) {
+      problems.push(
+        `device ${row.deviceIdShort} is annotated with an out-of-scope tab but is not ` +
+          `attributed to a live property - the exclusion filter leaked`
+      );
+    }
   }
 
   if (problems.length) {

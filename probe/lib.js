@@ -22,11 +22,17 @@ const RAW_DIR = path.join(__dirname, '..', 'data', 'raw', 'particle-probe');
 // Secrets
 // ---------------------------------------------------------------------------
 
+// The probe reads its OWN token, deliberately separate from the pipeline's.
+// PARTICLE_TOKEN is the build credential and is scoped to devices:list only;
+// the probe needs the broader diagnostics/ledger scopes, so mixing them would
+// silently break one or the other.
+const TOKEN_ENV = 'PARTICLE_PROBE_TOKEN';
+
 function env() {
-  const token = (process.env.PARTICLE_TOKEN || '').trim();
+  const token = (process.env[TOKEN_ENV] || '').trim();
   const product = (process.env.PARTICLE_PRODUCT || '').trim();
   const missing = [];
-  if (!token || token === 'REPLACE_ME') missing.push('PARTICLE_TOKEN');
+  if (!token || token === 'REPLACE_ME') missing.push(TOKEN_ENV);
   if (!product || product === 'REPLACE_ME') missing.push('PARTICLE_PRODUCT');
   if (missing.length) {
     throw new Error(
@@ -40,7 +46,7 @@ function env() {
 /** Scrub the token out of anything bound for stdout or disk. */
 function redact(s) {
   const str = typeof s === 'string' ? s : JSON.stringify(s);
-  const token = (process.env.PARTICLE_TOKEN || '').trim();
+  const token = (process.env[TOKEN_ENV] || '').trim();
   let out = str;
   if (token && token.length > 6) out = out.split(token).join('<REDACTED_TOKEN>');
   // Belt and braces: catch bearer headers and access_token params generically.

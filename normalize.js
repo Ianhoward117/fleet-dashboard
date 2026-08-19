@@ -244,6 +244,7 @@ function particleGroupCode(device) {
  */
 function readExcludedDeviceIds(registryWb) {
   const byTab = {};
+  const tabSets = new Map();
   const all = new Set();
   for (const tab of EXCLUDED_REGISTRY_TABS) {
     if (!registryWb.SheetNames.includes(tab)) {
@@ -262,6 +263,7 @@ function readExcludedDeviceIds(registryWb) {
         all.add(id);
       }
     }
+    tabSets.set(tab, ids);
     byTab[tab] = ids.size;
   }
   // Logged here rather than returned into the payload: these tab names are
@@ -272,7 +274,7 @@ function readExcludedDeviceIds(registryWb) {
     console.log(`  ${JSON.stringify(tab).padEnd(38)} ${String(count).padStart(4)} device ids`);
   }
   console.log(`  ${'total distinct excluded ids'.padEnd(38)} ${String(all.size).padStart(4)}`);
-  return { all, byTab };
+  return { all, byTab, tabSets };
 }
 
 // ---------------------------------------------------------------------------
@@ -800,6 +802,7 @@ function normalize() {
   const unmappedByGroup = {};
   let unmappedStale = 0;
   let excludedFiltered = 0;
+  let excludedRecovered = 0;
 
   for (const d of particle.devices) {
     if (!d.id) continue;
@@ -808,20 +811,32 @@ function normalize() {
     const age = ageOf(d);
     const isLive = age !== null && age <= liveDays;
 
-    // Out-of-scope hardware is filtered before anything is recorded, so it can
-    // never reach the page. Counted only so the filter is auditable.
-    if (excluded.all.has(d.id)) {
+    const g = particleGroupCode(d);
+    const prop = g ? PROPERTIES.find((p) => p.code === g.code) : null;
+
+    // Exclusion precedence. The exclusion tabs are transit logs, not rosters:
+    // a device passes across the bench and is later installed at a live
+    // property, and 152 of the 196 ids in the 9829 tab are also in the lab
+    // tab. So membership alone cannot mean "out of scope".
+    //
+    // Rule: a device carrying a LIVE property's esa_ group tag is never
+    // excluded. Its group is current fleet assignment; the tab membership is
+    // history. It stays in the list, annotated with where else it appears.
+    // Anything excluded without such a tag is dropped before it is recorded
+    // and can never reach the page.
+    if (excluded.all.has(d.id) && !prop) {
       if (isLive) excludedFiltered++;
       continue;
     }
+    const alsoInExcludedTabs = excluded.all.has(d.id)
+      ? EXCLUDED_REGISTRY_TABS.filter((t) => excluded.tabSets.get(t).has(d.id))
+      : [];
+    if (alsoInExcludedTabs.length && isLive) excludedRecovered++;
 
     if (!isLive) {
       unmappedStale++;
       continue;
     }
-
-    const g = particleGroupCode(d);
-    const prop = g ? PROPERTIES.find((p) => p.code === g.code) : null;
     liveButUnmapped.push({
       property: prop ? prop.code : null, // null = fleet-level pool, no usable group
       propertyName: prop ? prop.name : null,
@@ -831,6 +846,9 @@ function normalize() {
       group: g ? g.group : null,
       lastHeard: d.last_heard || null,
       ageDays: round(age, 1),
+      // Provenance, not scope: this device is live under a current property
+      // group but also appears in one or more historical/out-of-scope tabs.
+      alsoInExcludedTabs,
     });
     const bucket = prop ? prop.code : 'fleet';
     unmappedByGroup[bucket] = (unmappedByGroup[bucket] || 0) + 1;
@@ -873,6 +891,7 @@ function normalize() {
     excludedDeviceIds: excluded.all.size,
     excludedTabs: EXCLUDED_REGISTRY_TABS.length, // names deliberately not carried in the payload
     excludedLiveFiltered: excludedFiltered,
+    excludedLiveRecovered: excludedRecovered, // kept despite tab membership, via a live group tag
   };
 
   // Triage order: worst first - Issue before Check, then longest silent.
@@ -975,6 +994,7 @@ function report(data) {
   console.log(`  unmapped and stale (>${q.liveWindowDays}d) : ${q.unmappedStale}  (count only, not listed)`);
   console.log(`  excluded device ids     : ${q.excludedDeviceIds} across ${q.excludedTabs} tabs (listed above)`);
   console.log(`  excluded devices that were live+unmapped and filtered out: ${q.excludedLiveFiltered}`);
+  console.log(`  kept despite tab membership (live property group tag)     : ${q.excludedLiveRecovered}`);
 
   const r = data.reconciliation;
   console.log('\nNORMALIZE  reconciliation summary');
