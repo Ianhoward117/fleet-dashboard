@@ -39,8 +39,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # As of v2 fetch.js also reads the Particle device list, so this step
+      # needs the same token Netlify uses. GitHub masks secrets in logs, and
+      # fetch.js fails loudly with a scope-aware message if it is absent or
+      # rejected - it never echoes the value.
       - name: Fetch sheets and normalize
+        env:
+          PARTICLE_TOKEN: ${{ secrets.PARTICLE_TOKEN }}
         run: |
+          if [ -z "${PARTICLE_TOKEN:-}" ]; then
+            echo "::error::PARTICLE_TOKEN is not set. Add it under" \
+                 "Settings > Secrets and variables > Actions. Heartbeats come" \
+                 "from the Particle API as of v2, so the refresh cannot run without it."
+            exit 1
+          fi
           node fetch.js
           node normalize.js
 

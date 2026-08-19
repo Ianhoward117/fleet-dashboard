@@ -1028,9 +1028,22 @@ function report(data) {
  * Roughly 500 bytes a day.
  */
 function dailyRecord(data) {
+  // v2 adds fields; it never changes or reorders the existing ones. History
+  // files are an append-only series and a shape change would silently break
+  // every trend drawn from the days either side of it.
+  const q = data.particle || {};
+  const hbB = data.thresholds.heartbeatAge.buckets;
+  // Which histogram bucket counts as "live" - taken from config rather than
+  // hardcoded, so retuning the cutoffs cannot quietly desync the series.
+  const freshKey = (hbB.find((b) => b.maxDays === (q.freshWindowDays || 2)) || hbB[0]).key;
+  const unmappedByGroup = q.unmappedLiveByGroup || {};
+
   const properties = {};
+  let liveUnder2dTotal = 0;
   for (const p of data.properties) {
     const c = p.counts;
+    const liveUnder2d = p.heartbeatHistogram[freshKey] || 0;
+    liveUnder2dTotal += liveUnder2d;
     properties[p.code] = {
       rooms: c.rooms,
       ok: c.ok,
@@ -1040,6 +1053,9 @@ function dailyRecord(data) {
       silent: c.silent,
       snapshot: p.snapshot.currentTime ? p.snapshot.currentTime.slice(0, 10) : null,
       battery: p.batteryHistogram,
+      // --- added in v2 -----------------------------------------------------
+      liveUnder2d, // mapped rooms heard from within the fresh window
+      unmappedLive: unmappedByGroup[p.code] || 0, // live devices with no room here
     };
   }
   return {
@@ -1047,6 +1063,12 @@ function dailyRecord(data) {
     builtAt: data.builtAt,
     triageRows: data.triage.length,
     properties,
+    // --- added in v2 ---------------------------------------------------------
+    // Fleet unmappedLive is NOT the sum of the per-property figures: devices
+    // with no usable group tag land in a fleet-level pool and are attributed
+    // to no property.
+    liveUnder2d: liveUnder2dTotal,
+    unmappedLive: q.unmappedLive || 0,
   };
 }
 
