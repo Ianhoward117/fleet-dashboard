@@ -181,6 +181,7 @@ function render() {
   const PAGE_FIELDS = [
     'property', 'propertyName', 'room', 'deviceName', 'deviceId', 'status',
     'lastHeartbeat', 'daysSilent', 'heartbeatBucket', 'battery', 'batteryClass',
+    'batteryTimestamp', 'batteryAgeDays',
     'actionItem', 'actionType', 'lastChecked', 'notes',
   ];
   const rooms = data.properties.flatMap((p) =>
@@ -193,6 +194,10 @@ function render() {
 
   const payload = {
     builtAt: data.builtAt,
+    // Heartbeats are read live at build time, so one stamp covers the fleet.
+    heartbeatsAsOf: data.heartbeatsAsOf,
+    // Counts only - no tab names, no device detail for out-of-scope hardware.
+    particle: data.particle,
     thresholds: data.thresholds,
     rooms,
     reconciliation: data.reconciliation,
@@ -224,7 +229,8 @@ function render() {
   console.log(
     `RENDER  ${payload.properties.length} properties, ${rooms.length} rooms, ${triageCount} triage rows, ` +
       `${recon.ghosts.length + recon.unregisteredReporters.length + recon.roomDeviceMismatches.length +
-        recon.orphanTelemetryRooms.length + recon.duplicateRoomRows.length} reconciliation items`
+        recon.orphanTelemetryRooms.length + recon.duplicateRoomRows.length +
+        recon.liveButUnmapped.length + recon.unknownToParticle.length} reconciliation items`
   );
   console.log(
     payload.history.length

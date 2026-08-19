@@ -166,6 +166,14 @@
   .card-hd h2 { font-size: 15px; }
   .card-hd .code { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
   .tag { font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--flat-bg); color: var(--flat-fg); border: 1px solid var(--flat-line); }
+  .livetag {
+    display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; padding: 1px 5px; border-radius: 999px;
+    background: var(--good-bg, rgba(46,160,67,.15)); color: var(--good, #2ea043);
+    vertical-align: 1px;
+  }
+  .cardnote .await { font-weight: 600; }
+  .cardnote .await a { color: inherit; }
   .freshness {
     margin-left: auto; text-align: right; border-radius: 7px; padding: 5px 9px;
     border: 1px solid transparent; min-width: 118px;
@@ -256,7 +264,15 @@
     td.rowhead::before { display: none; }
     .notecell { max-width: none; }
     .notecell .clamp { display: block; -webkit-line-clamp: none; overflow: visible; }
-    .freshness { margin-left: 0; width: 100%; text-align: left; }
+    .livetag {
+    display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; padding: 1px 5px; border-radius: 999px;
+    background: var(--good-bg, rgba(46,160,67,.15)); color: var(--good, #2ea043);
+    vertical-align: 1px;
+  }
+  .cardnote .await { font-weight: 600; }
+  .cardnote .await a { color: inherit; }
+  .freshness { margin-left: 0; width: 100%; text-align: left; }
   }
 </style>
 </head>
@@ -268,7 +284,10 @@
       <img src="{{LOGO_DATA_URI}}" alt="Shower Stream" width="26" height="26">
       <h1>Shower Stream <span class="sub">&middot; Fleet &amp; Ops</span></h1>
     </div>
-    <div class="built">Page built <span id="builtAt">&mdash;</span></div>
+    <div class="built">
+      <div>Heartbeats as of <span id="hbAsOf">&mdash;</span> <span class="livetag">live</span></div>
+      <div class="muted">Page built <span id="builtAt">&mdash;</span></div>
+    </div>
   </div>
   <div class="chips" id="snapChips"></div>
 </header>
@@ -320,7 +339,7 @@
             <th class="sortable" data-key="daysSilent">Days silent <span class="arrow">&#8645;</span></th>
             <th class="sortable" data-key="battery">Battery <span class="arrow">&#8645;</span></th>
             <th class="sortable" data-key="actionItem">Action item <span class="arrow">&#8645;</span></th>
-            <th class="sortable" data-key="lastChecked">Last checked <span class="arrow">&#8645;</span></th>
+            <th class="sortable" data-key="batteryTimestamp">Battery read <span class="arrow">&#8645;</span></th>
             <th>Notes</th>
           </tr>
         </thead>
@@ -343,8 +362,9 @@
 <footer>
   Internal ops tool &middot; fleet health and triage only (savings metrics live elsewhere) &middot;
   read-only view of the source sheets &middot; unlisted, not indexed.
-  &ldquo;Last checked&rdquo; is when that property&rsquo;s telemetry was last exported &mdash; days-silent is
-  counted from that moment, not from today. Thresholds and property names are edited in <code>config.js</code>.
+  Heartbeats come live from the Particle Cloud API at page-build time, so days-silent is counted
+  from the build stamp above. Battery voltages still come from the source sheets and carry their own
+  approximate age. Thresholds and property names are edited in <code>config.js</code>.
 </footer>
 
 <script type="application/json" id="payload">{{DATA_JSON}}</script>
@@ -420,20 +440,29 @@
 
   // ---------------------------------------------------------------- header
   document.getElementById('builtAt').textContent = fmtDateTime(DATA.builtAt);
+  document.getElementById('hbAsOf').textContent = fmtDateTime(DATA.heartbeatsAsOf || DATA.builtAt);
   document.getElementById('nRooms').textContent = ALL_ROOMS.length;
 
   var R = DATA.reconciliation;
   var reconTotal = R.ghosts.length + R.unregisteredReporters.length + R.roomDeviceMismatches.length
-                 + R.orphanTelemetryRooms.length + R.duplicateRoomRows.length;
+                 + R.orphanTelemetryRooms.length + R.duplicateRoomRows.length
+                 + (R.liveButUnmapped ? R.liveButUnmapped.length : 0)
+                 + (R.unknownToParticle ? R.unknownToParticle.length : 0);
   document.getElementById('nRecon').textContent = reconTotal;
 
+  // Heartbeats are live for every property now, so the only thing that can go
+  // stale per property is its battery data. The chips report that instead.
   document.getElementById('snapChips').innerHTML = DATA.properties.map(function (p) {
-    var age = ageDays(p.snapshot.currentTime);
-    var b = bucketFor(age, TH.snapshotFreshness);
-    return '<span class="chip ' + toneClass(b ? b.tone : 'flat') + '" title="Export snapshot '
-      + esc(fmtDateTime(p.snapshot.currentTime)) + '">'
-      + '<b>' + esc(p.code) + '</b><span class="lbl">data as of</span> ' + esc(fmtDate(p.snapshot.currentTime))
-      + ' <span class="age">&middot; ' + fmtDays(age) + '<span class="lbl"> old</span></span></span>';
+    var ba = p.batteryAge;
+    var b = bucketFor(ba.medianDays, TH.batteryAge);
+    var title = ba.readings
+      ? ba.readings + ' battery readings; median ' + fmtDays(ba.medianDays) + ' old, oldest '
+        + fmtDays(ba.oldestDays) + '. Approximate: the collector runs intermittently.'
+      : 'No battery readings for this property.';
+    return '<span class="chip ' + toneClass(b ? b.tone : 'flat') + '" title="' + esc(title) + '">'
+      + '<b>' + esc(p.code) + '</b><span class="lbl">battery data</span> '
+      + (ba.readings ? '~' + fmtDays(ba.medianDays) + '<span class="lbl"> old</span>' : '<span class="lbl">none</span>')
+      + '</span>';
   }).join('');
 
   // ------------------------------------------------------------ table view
@@ -522,25 +551,30 @@
   function rowHtml(r) {
     var hb = hbBucketMeta(r.heartbeatBucket);
     var batTone = BATTERY_TONES[r.batteryClass] || 'flat';
-    var checkAge = ageDays(r.lastChecked);
-    var checkBucket = bucketFor(checkAge, TH.snapshotFreshness);
+    var batAgeBucket = bucketFor(r.batteryAgeDays, TH.batteryAge);
     return '<tr>'
       + '<td class="rowhead" data-label="Prop"><b>' + esc(r.property) + '</b> <span class="muted">' + esc(r.propertyName) + '</span></td>'
       + '<td class="num" data-label="Room"><b>' + esc(r.room) + '</b></td>'
       + '<td class="mono" data-label="Device">' + (r.deviceName ? esc(r.deviceName) : '<span class="muted">—</span>') + '</td>'
       + '<td data-label="Status"><span class="pill ' + toneClass(STATUS_TONES[r.status] || 'flat') + '">' + esc(r.status) + '</span></td>'
-      + '<td class="num" data-label="Days silent" title="' + esc(hb.label) + ' · last heartbeat ' + esc(fmtDateTime(r.lastHeartbeat)) + '">'
+      + '<td class="num" data-label="Days silent" title="' + esc(hb.label) + ' · last heard from Particle '
+        + esc(fmtDateTime(r.lastHeartbeat)) + ' · counted from page build time">'
         + '<span style="color:' + toneVar(hb.tone) + ';font-weight:600">' + fmtDays(r.daysSilent) + '</span></td>'
-      + '<td class="num" data-label="Battery" title="' + esc(BATTERY_LABELS[r.batteryClass] || '') + '">'
+      + '<td class="num" data-label="Battery" title="' + esc(BATTERY_LABELS[r.batteryClass] || '')
+        + (r.batteryAgeDays === null ? '' : ' · reading is approximately ' + fmtDays(r.batteryAgeDays) + ' old') + '">'
         + (r.battery === null
             ? '<span class="muted">—</span>'
-            : '<span style="color:' + toneVar(batTone) + ';font-weight:600">' + r.battery.toFixed(2) + '&thinsp;V</span>')
+            : '<span style="color:' + toneVar(batTone) + ';font-weight:600">' + r.battery.toFixed(2) + '&thinsp;V</span>'
+              + (r.batteryAgeDays === null ? '' : ' <span class="muted">~' + fmtDays(r.batteryAgeDays) + '</span>'))
         + '</td>'
       + '<td data-label="Action">' + (r.actionItem ? esc(r.actionItem) : '<span class="muted">—</span>') + '</td>'
-      + '<td class="num" data-label="Last checked" title="Telemetry for ' + esc(r.property) + ' was last exported '
-        + esc(fmtDateTime(r.lastChecked)) + '. Days silent is counted from then.">'
-        + '<span style="color:' + toneVar(checkBucket ? checkBucket.tone : 'flat') + '">' + esc(fmtDateShort(r.lastChecked)) + '</span>'
-        + ' <span class="muted">' + (checkAge === null ? '' : '· ' + fmtDays(checkAge)) + '</span></td>'
+      + '<td class="num" data-label="Battery read" title="'
+        + (r.batteryTimestamp
+            ? 'Battery last recorded ' + esc(fmtDateTime(r.batteryTimestamp)) + '. Approximate: the collector runs intermittently.'
+            : 'No battery reading recorded for this room.') + '">'
+        + (r.batteryTimestamp
+            ? '<span style="color:' + toneVar(batAgeBucket ? batAgeBucket.tone : 'flat') + '">' + esc(fmtDateShort(r.batteryTimestamp)) + '</span>'
+            : '<span class="muted">—</span>') + '</td>'
       + '<td class="notecell" data-label="Notes"' + (r.notes ? ' title="' + esc(r.notes) + '"' : '') + '>'
         + (r.notes ? '<span class="clamp">' + esc(r.notes) + '</span>' : '') + '</td>'
       + '</tr>';
@@ -754,8 +788,12 @@
 
   document.getElementById('cards').innerHTML = DATA.properties.map(function (p) {
     var c = p.counts;
-    var age = ageDays(p.snapshot.currentTime);
-    var fb = bucketFor(age, TH.snapshotFreshness);
+    var ba = p.batteryAge;
+    var fb = bucketFor(ba.medianDays, TH.batteryAge);
+    // Live devices at this property that map to no room we render. Driven by
+    // the per-property count, so any property shows it - not just 6178.
+    var awaiting = (DATA.particle && DATA.particle.unmappedLiveByGroup
+      && DATA.particle.unmappedLiveByGroup[p.code]) || 0;
 
     var mix = [
       { label: 'Ok', n: c.ok, tone: 'good' },
@@ -781,15 +819,20 @@
     if (c.rooms !== c.distinctRooms) notes.push(c.rooms + ' rows cover ' + c.distinctRooms + ' distinct rooms &mdash; some rooms appear twice.');
     if (p.snapshot.labelMatchesSnapshot === false) notes.push('Sheet header says &ldquo;' + esc(p.snapshot.headerLabel) + '&rdquo;; badge uses the export timestamp.');
     if (!TH.batteryVoltage.confirmed) notes.push('Battery cutoffs unconfirmed &mdash; voltages shown unclassified.');
+    if (awaiting > 0) {
+      notes.push('<span class="await">+' + awaiting + ' live device' + (awaiting === 1 ? '' : 's')
+        + ' awaiting room mapping &rarr; <a href="#" data-goto="recon">Reconciliation</a></span>');
+    }
 
     return '<div class="card">'
       + '<div class="card-hd">'
         + '<div><h2>' + esc(p.name) + '</h2><span class="code">ESA ' + esc(p.code) + '</span>'
         + (p.tag ? ' <span class="tag">' + esc(p.tag) + '</span>' : '') + '</div>'
-        + '<div class="freshness ' + toneClass(fb ? fb.tone : 'flat') + '">'
-          + '<div class="fl">Data as of</div>'
-          + '<div class="fv">' + fmtDays(age) + ' old</div>'
-          + '<div class="fd">' + esc(fmtDate(p.snapshot.currentTime)) + '</div>'
+        + '<div class="freshness ' + toneClass(fb ? fb.tone : 'flat') + '" title="Heartbeats are live at build time. '
+          + 'This badge reports battery-data age, the only part of this property&rsquo;s data that can go stale.">'
+          + '<div class="fl">Battery data</div>'
+          + '<div class="fv">' + (ba.readings ? '~' + fmtDays(ba.medianDays) + ' old' : 'none') + '</div>'
+          + '<div class="fd">' + (ba.readings ? 'oldest ' + fmtDays(ba.oldestDays) : '&mdash;') + '</div>'
         + '</div>'
       + '</div>'
       + '<div class="kpis">'
@@ -803,7 +846,13 @@
       + '<div class="metric"><div class="mh">Battery' + (TH.batteryVoltage.confirmed
           ? ' <span class="muted">(ok ≥' + TH.batteryVoltage.okAbove + 'V, warn ≥' + TH.batteryVoltage.warnAbove + 'V)</span>'
           : ' <span class="muted">(cutoffs unconfirmed)</span>') + '</div>'
-        + stack(batParts, batTotal) + legend(batParts) + '</div>'
+        + stack(batParts, batTotal) + legend(batParts)
+        + (ba.readings
+            ? '<div class="muted" style="margin-top:6px;font-size:11px">Readings ~' + fmtDays(ba.medianDays)
+              + ' old on average, oldest ~' + fmtDays(ba.oldestDays)
+              + ' &middot; ' + ba.readings + ' of ' + c.rooms + ' rooms &middot; ages approximate</div>'
+            : '<div class="muted" style="margin-top:6px;font-size:11px">No battery readings for this property.</div>')
+        + '</div>'
       + '<div class="cardnote">' + notes.join('<br>') + '</div>'
       + '</div>';
   }).join('');
@@ -829,6 +878,50 @@
   }
 
   var blocks = '';
+
+  // Devices the cloud has heard from that map to no room we render. Leads the
+  // page because it is the only list here that is usually actionable today.
+  var Q = DATA.particle || {};
+  var lum = R.liveButUnmapped || [];
+  if (lum.length || Q.unmappedStale) {
+    var staleLine = Q.unmappedStale
+      ? ' A further <b>' + Q.unmappedStale + '</b> unmapped device' + (Q.unmappedStale === 1 ? ' has' : 's have')
+        + ' not been heard from in over ' + Q.liveWindowDays + ' days and are counted only, not listed.'
+      : '';
+    blocks += block('Live but unmapped', lum.length,
+      'Heard from Particle within ' + Q.liveWindowDays + ' days but matching no room on this dashboard. '
+      + esc(R.liveUnmappedNote || '') + staleLine,
+      table(['Prop', 'Device', 'Short id', 'Group', 'Last heard'], lum, function (u) {
+        return '<tr>'
+          + '<td class="rowhead" data-label="Prop">'
+            + (u.property
+                ? '<b>' + esc(u.property) + '</b> <span class="muted">' + esc(u.propertyName) + '</span>'
+                : '<span class="muted">unattributed</span>')
+          + '</td>'
+          + '<td class="mono" data-label="Device">' + esc(u.deviceName || '—')
+            + (u.alsoInExcludedTabs && u.alsoInExcludedTabs.length
+                ? ' <span class="muted">(also in ' + u.alsoInExcludedTabs.map(esc).join(', ') + ')</span>'
+                : '')
+          + '</td>'
+          + '<td class="mono muted" data-label="Short id">' + esc(u.deviceIdShort) + '</td>'
+          + '<td class="mono" data-label="Group">' + esc(u.group || '—') + '</td>'
+          + '<td class="num" data-label="Last heard" title="' + esc(fmtDateTime(u.lastHeard)) + '">'
+            + fmtDays(u.ageDays) + '</td></tr>';
+      }));
+  }
+
+  if (R.unknownToParticle && R.unknownToParticle.length) {
+    blocks += block('Unknown to Particle', R.unknownToParticle.length,
+      'Mapped to a room here, but absent from the Particle product device list entirely. The API is a '
+      + 'strict superset of the exports, so this should be zero; these rooms are shown as never-reporting.',
+      table(['Prop', 'Room', 'Device', 'Particle ID'], R.unknownToParticle, function (u) {
+        return '<tr>' + propCell(u)
+          + '<td class="num" data-label="Room"><b>' + esc(u.room) + '</b></td>'
+          + '<td class="mono" data-label="Device">' + esc(u.deviceName || '—') + '</td>'
+          + '<td class="mono muted" data-label="Particle ID">' + esc(u.deviceId) + '</td></tr>';
+      }));
+  }
+
   blocks += block('Ghosts', R.ghosts.length,
     'In the registry, never seen in telemetry. Either never came online, or was removed without the registry being updated.',
     table(['Prop', 'Room', 'Device', 'Particle ID', 'Installed', 'Registry notes'], R.ghosts, function (g) {
@@ -911,6 +1004,14 @@
 
   document.querySelectorAll('#tabs button').forEach(function (b) {
     b.addEventListener('click', function () { show(b.dataset.view); });
+  });
+
+  // Cards are rendered before show() exists, so delegate rather than bind.
+  document.addEventListener('click', function (e) {
+    var a = e.target.closest && e.target.closest('[data-goto]');
+    if (!a) return;
+    e.preventDefault();
+    show(a.getAttribute('data-goto'));
   });
 
   var initial = readUrl();
