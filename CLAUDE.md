@@ -32,12 +32,18 @@ state, decisions already made, and the environment traps.
   Netlify changes have to be made by Ian; guide, do not attempt to drive.
 - **The daily bot commits to `main`.** Always `git pull --rebase` before
   pushing or the push is rejected.
+- **The build needs `PARTICLE_TOKEN` as of v2.** Locally it lives in
+  `.env.local` (gitignored) and you must run node with
+  `--env-file=.env.local`; a bare `node build.js` fails immediately by
+  design. The probe keeps its own broader credential as
+  `PARTICLE_PROBE_TOKEN` so the two never shadow each other. Never print
+  either, in any form.
 
 ## Commands
 
 ```bash
-node build.js        # fetch -> normalize -> render  (what Netlify runs)
-node fetch.js        # re-download the 5 workbooks into data/raw/
+node --env-file=.env.local build.js   # fetch -> normalize -> render (what Netlify runs)
+node --env-file=.env.local fetch.js   # 4 workbooks + Particle device list -> data/raw/
 node normalize.js    # rebuild normalized.json + print all counts
 node render.js       # rebuild dist/index.html from existing JSON
 node snapshot.js     # append today's counts to history/  (workflow does this)
@@ -79,10 +85,28 @@ Everything else is vanilla Node and vanilla browser JS.
 - **Tabs:** Fleet rollup (default) → All rooms → Reconciliation. The old
   triage tab is folded into All rooms as the `Issue + Check` status filter;
   legacy `?v=triage` links still resolve to it.
-- **Days-silent is measured against each property's own export snapshot**, not
-  against today, because that is what the source column means. The
-  **Last checked** column and the freshness badges make that legible. Ian
-  chose this over rebasing the figure to today.
+- **Days-silent is measured against build time.** *(v2, 2026-08-19 — this
+  supersedes the earlier decision to measure against each property's own
+  export snapshot.)* That earlier rule was correct while heartbeats came from
+  a hand-refreshed export: the figure meant "as of that export". Heartbeats
+  now come live from the Particle API at build time, so "vs now" is simply
+  what the number means. The old **Last checked** column is gone; the header
+  carries one global **Heartbeats as of …** stamp instead.
+- **v2 shipped 2026-08-19: heartbeats come from the Particle Cloud API.**
+  One endpoint only — `GET /v1/products/18173/devices` — and never anything
+  that commands or wakes a device. Battery, room mapping and triage stay on
+  the sheets permanently: the probe proved battery is absent from the Cloud
+  API for this hardware and that rooms never appear in a Particle payload.
+  `fetch.js` remains the only file that knows the API exists.
+- **Per-property freshness badges now report battery-data age**, since
+  heartbeats can no longer be stale. Same confirmed 2d/7d tones. Battery ages
+  are shown as approximate — Priya confirms the collector runs intermittently
+  and its timestamps are not precise.
+- **Exclusion tabs are transit logs, not rosters.** A device carrying a live
+  property's `esa_` group tag is never excluded, because that group is its
+  current assignment while tab membership is history. 152 of the 196 ids in
+  the 9829 tab are also in the lab tab, so membership alone cannot mean
+  out-of-scope.
 - **Alerts go to the GitHub account owning the schedule**, not a shared inbox.
   Netlify email is Pro-only; the workflow's `verify-live.js` step is the
   watchdog instead. Escalation options are in the README.
@@ -95,24 +119,56 @@ Everything else is vanilla Node and vanilla browser JS.
   303 rooms, 148 Ok / 121 Issue / 34 Check, 155 needing attention.
   (Was 421 / 185 / 197 / 39 / 236 before 9829 was removed.)
 - Daily refresh has run unattended and green on 16-19 Aug.
-- 4 days of history captured. **All trends are flat** (29/69/23 unchanged)
-  because the `py_export_*` sheets have not been re-exported — the dashboard
-  is faithfully reporting stale sources, not malfunctioning.
-- Snapshot ages as of 19 Aug: 6197 ~9d, 9502 ~36d, 6178 ~56d.
+- 4 days of history captured. Issue-count trends are flat (29/69/23) because
+  the `py_export_*` sheets have not been re-exported — status still comes
+  from those sheets.
+- **Heartbeats are live as of v2**; the join is exact (229/229 device ids
+  matched, zero unknown to Particle) against a fleet of 879 devices.
+- Battery-data age as of 19 Aug (this is what the badges now show):
+  6197 ~12d median, 9502 ~37d, 6178 ~69d.
 
 ## Open items
 
-- **6178 is the property in trouble:** 60 of 93 rooms have never reported,
-  registry covers only 26 of 93, snapshot ~56 days stale.
-- **The real bottleneck is the `py_export` refresh, not this dashboard.**
-  Rebuilding more often cannot help. Fix is to schedule that Python export or
-  bring v2 (Particle API) forward.
+- **6178: the data source got honest, and it cuts both ways.** Read these two
+  facts together or you will draw the wrong conclusion.
+
+  *The export was flattering the mapped set.* Under live heartbeats, 6178's
+  93 mapped rooms read 1 fresh / 5 aging / 27 stale / 60 never — where the
+  June export made them look considerably healthier. Nothing got worse on
+  2026-08-19; we simply stopped measuring silence against a two-month-old
+  photograph.
+
+  *And the page is showing far less of 6178 than exists.* Roughly 52 devices
+  carrying an `esa_6178` group tag were heard from within the last 7 days but
+  map to no room on this dashboard at all. Installs outran the paperwork:
+  the registry covers 26 of 93 rooms, and Priya confirms the exports only
+  include a device after its first data lands, with 6178 installs continuing
+  into June.
+
+  **Net read: the hardware is probably fine in many more rooms than the page
+  can show, and the bottleneck is registry/export backfill — a field and
+  clerical task, not an engineering one.** The fix is to get those ~52 devices
+  mapped to rooms, after which most should appear as healthy. Do not present
+  6178's current numbers as a fleet regression.
+
+- **9502 improved under live data:** silent dropped from 9 to 3 once
+  heartbeats stopped being measured against a 36-day-old export. Same
+  direction of correction as 6178, opposite sign — further evidence this is a
+  measurement change, not a fleet change.
+- **The `py_export` refresh still gates battery, rooms and triage status.**
+  v2 fixed heartbeats only. Battery voltages at 6178 are ~69 days old on
+  average. Scheduling that Python export remains the highest-value fix.
 - `npm audit` flags xlsx 0.18.5 (prototype pollution, ReDoS). No npm-side fix
   exists; patched builds are only on SheetJS's own CDN. Judged acceptable for
   a build-time parser reading our own sheets.
-- Thresholds are due a review with Priya.
+- ~~Thresholds are due a review with Priya.~~ **CLOSED** — reviewed and
+  confirmed by Priya; battery cutoffs and heartbeat buckets stand as
+  configured. Do not re-litigate.
 - Consider access control before the mid-September ESA/David meeting if
   room-level detail will be on screen for external eyes.
+- Open questions for Priya on the battery collector remain in
+  `probe/FINDINGS.md` §7 — chiefly where `BatteryVoltage_V` is collected,
+  since it is not in the Cloud API.
 
 ## Working style Ian asked for
 

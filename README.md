@@ -38,16 +38,26 @@ open the room list pre-filtered to everything needing attention.
 **Export CSV** downloads exactly what is on screen — same filters, same order —
 for a printable worklist rather than a webpage.
 
-### Reading "Last checked"
+### Reading freshness
 
-The room table carries a **Last checked** column: the moment that property's
-telemetry was last exported.
+Two sources, two different kinds of age, and the page keeps them apart.
 
-This matters because **days-silent is counted from that moment, not from
-today.** A row reading `14d` silent against a `Last checked` of 52 days ago
-means the device had been quiet for 14 days as of seven weeks ago. The column
-is colour-coded on the same scale as the freshness badge, so a stale reference
-point is visible on the row itself.
+**Heartbeats are live.** They are read from the Particle Cloud API every time
+the page is built, so **days-silent is counted from the build stamp in the
+header** — "Heartbeats as of …". There is no per-property heartbeat staleness
+any more, because there is nothing to be stale: every property is current by
+construction.
+
+**Battery is not live.** Voltages still come from the `py_export_batterystatus`
+sheets, so each reading carries its own age. The room table shows that age
+beside the voltage (`3.94 V  ~12d`) and the exact reading date in the
+**Battery read** column. Ages are shown with a `~` and described as
+approximate on purpose: the collector runs intermittently and its timestamps
+are not precise enough to read as exact.
+
+The per-property freshness badge and the header chips therefore report
+**battery-data age** — the only part of a property's data that can still go
+stale — on the same 2-day / 7-day colour scale as before.
 
 ---
 
@@ -55,22 +65,30 @@ point is visible on the row itself.
 
 ```
   Google Sheets (4 workbooks, public export URLs, read-only)
-        │
-        │   registry ── master device spreadsheet, one tab per property
-        │   wo_6197 ─┐
-        │   wo_6178  ├─ one work order workbook per property, 3 sheets each:
-        │   wo_9502 ─┘     Room Status              (human triage layer)
-        │                  py_export_batterystatus  (voltages)
-        │                  py_export_heartbeatstatus(heartbeats + snapshot time)
-        ▼
-  ┌──────────────┐
-  │  fetch.js    │  downloads all 4 workbooks → data/raw/  (gitignored)
-  │              │  FAILS THE BUILD on any HTTP error, non-xlsx payload,
-  │              │  or missing tab. Never renders a partial fleet.
-  └──────┬───────┘
+        │                                    Particle Cloud API (authenticated)
+        │   registry ── master device                    │
+        │               spreadsheet, one tab             │  GET /v1/products/
+        │               per property                     │      18173/devices
+        │   wo_6197 ─┐                                   │  ~9 pages @ 100,
+        │   wo_6178  ├─ one work order workbook per      │  260 ms apart
+        │   wo_9502 ─┘  property, 3 sheets each:         │
+        │                 Room Status      (triage)      │  last_heard per
+        │                 py_export_batterystatus        │  device = the
+        │                                  (voltages)    │  heartbeat truth
+        │                 py_export_heartbeatstatus      │
+        │                                  (room↔device) │
+        ▼                                                ▼
+  ┌───────────────────────────────────────────────────────────┐
+  │  fetch.js   the ONLY file that knows either source exists  │
+  │             workbooks + device list → data/raw/ (gitignored)│
+  │             FAILS THE BUILD on any HTTP error, non-xlsx     │
+  │             payload, missing tab, missing/rejected token,   │
+  │             or an empty device list. Never a partial fleet. │
+  └──────┬────────────────────────────────────────────────────┘
          ▼
   ┌──────────────┐
-  │ normalize.js │  merges registry ↔ telemetry ↔ triage
+  │ normalize.js │  merges registry ↔ telemetry ↔ triage ↔ Particle
+  │              │  joins ParticleDeviceId ↔ device.id for liveness
   │              │  cleans room floats, suite halves, NA / #N/A /
   │              │  "No device in room"; collapses registry history to the
   │              │  current device per room by latest Install Date
@@ -111,19 +129,37 @@ corridor, which is where it actually gets used.
 
 ## Running it locally
 
+The build needs a Particle API token. Create `.env.local` in the repo root:
+
+```
+PARTICLE_TOKEN=your-devices-list-token
+```
+
+`.env.local` is gitignored and must stay that way — it is the only place the
+token lives on a developer machine. Then:
+
 ```bash
 npm install
-node build.js
+node --env-file=.env.local build.js
 open dist/index.html
 ```
 
 Individual stages, if you want to iterate on one:
 
 ```bash
-node fetch.js       # re-download the workbooks into data/raw/
-node normalize.js   # rebuild data/normalized.json and print the counts
-node render.js      # rebuild dist/index.html from the existing JSON
+node --env-file=.env.local fetch.js   # workbooks + Particle device list → data/raw/
+node normalize.js                     # rebuild data/normalized.json and print the counts
+node render.js                        # rebuild dist/index.html from the existing JSON
 ```
+
+`normalize.js` and `render.js` need no token: they read what `fetch.js`
+already wrote. Only `fetch.js` ever talks to the API.
+
+Running without the token is not a soft failure — the build stops immediately,
+before it downloads anything, with a message naming the variable. That is
+deliberate: heartbeats are load-bearing, and a fleet rendered without them
+would show every device as silent, which is the most misleading thing this
+page could display.
 
 `node normalize.js` prints per-property counts, the heartbeat and battery
 histograms, and the full reconciliation summary. That console output is the
@@ -136,8 +172,10 @@ fastest way to sanity-check a data question without opening the page.
 
 ## Refreshing the data
 
-The dashboard is a snapshot: it shows whatever the sheets said when it was
-last built.
+The dashboard is rebuilt, not live-updating. Heartbeats are read from the
+Particle API at build time, so they are current as of the build stamp in the
+header; battery, rooms and triage status show whatever the sheets said when
+that build ran.
 
 **Automatically** — `.github/workflows/rebuild.yml` runs at `0 11 * * *`
 (11:00 UTC = 06:00 CDT / 05:00 CST, so it lands before the working day in
@@ -153,12 +191,18 @@ curl -X POST -d '{}' "$NETLIFY_BUILD_HOOK"
 where `$NETLIFY_BUILD_HOOK` is the build-hook URL from
 **Netlify → Site configuration → Build & deploy → Build hooks → `daily-refresh`**.
 
-> **This hook URL is the only secret in the entire system.** Anyone holding it
-> can trigger a rebuild (they cannot read anything or change any data). It
-> lives in exactly one place — the GitHub Actions secret
-> `NETLIFY_BUILD_HOOK` — and must never be committed. Every data input is a
-> public URL, which is precisely why Netlify can build this without
-> credentials of any kind.
+> **There are two secrets in this system**, and neither is ever committed:
+>
+> - `NETLIFY_BUILD_HOOK` — the build-hook URL. Anyone holding it can trigger a
+>   rebuild; they cannot read anything or change any data. Lives in the GitHub
+>   Actions secret of the same name.
+> - `PARTICLE_TOKEN` — the `devices:list` API token added in v2. Lives in the
+>   Netlify environment variables **and** the GitHub Actions secrets, because
+>   the site build and the nightly history job each call the API independently.
+>   See [v2: the Particle API](#v2-the-particle-api-shipped).
+>
+> Every *sheet* input is still a public URL. The Particle call is the one
+> authenticated request the pipeline makes.
 
 ---
 
@@ -328,26 +372,67 @@ never mistaken for a current one.
 
 ---
 
-## v2: swapping to the Particle API
+## v2: the Particle API (shipped)
 
-`fetch.js` is the only file that knows where the data comes from. It is a
-deliberate seam.
+Heartbeats come from the Particle Cloud API. Battery, room mapping and triage
+status stay on the sheets, and always will: a read-only probe of the API
+([`probe/FINDINGS.md`](probe/FINDINGS.md)) established that battery is not
+exposed anywhere in the Cloud API for this hardware — these are P2 modules with
+no fuel gauge — and that no room identifier ever appears in a Particle payload.
 
-To move off the `py_export_*` sheets and read Particle directly:
+### The one endpoint
 
-1. Rewrite `fetch.js` so that instead of downloading workbooks it queries the
-   Particle API and writes the same three logical tables per property.
-2. Keep `readRoomStatus` reading the Room Status sheet — that layer is human
-   triage and has no API equivalent.
-3. **`normalize.js`, `render.js` and `template.html` do not change.**
+```
+GET https://api.particle.io/v1/products/18173/devices
+```
 
-That swap also removes the staleness problem at its source: the freshness
-badges exist because the `py_export_*` sheets are refreshed by hand. With a
-live API pull, every property is current by construction.
+That is the whole surface, and it is the only endpoint this pipeline is
+permitted to call. It reads cloud-held records and touches no hardware.
+Anything that commands or wakes a device — function calls, ping, signal,
+rename, claim, flash, and the per-device vitals GET, which asks the device to
+report — is out of bounds. These are physical units plumbed into occupied hotel
+water lines. `config.js` derives the path from the product id so there is one
+place to change it and no way to point it at a device-level route by accident.
 
-Note that a Particle API key **would** be a real secret — the first one this
-system has. It would need to live in a Netlify environment variable, and the
-"no secrets anywhere" property described above would no longer hold.
+Paginated 100 at a time, ~9 pages, 260 ms apart to stay under 4 requests/second.
+No rate limiting has ever been observed, and Particle returns no
+`X-RateLimit-*` headers to budget against, so the pacing stays conservative by
+convention.
+
+### The token
+
+The first real secret this system has. It is a Particle **API user** token
+scoped to **`devices:list` only** — API users cannot log into the Console, and
+their tokens do not expire.
+
+It must be set in **two** places, and the site and the nightly job fail
+independently without it:
+
+| Where | Why | How |
+|---|---|---|
+| Netlify environment variable | the site build runs `node build.js` | Site configuration → Environment variables → `PARTICLE_TOKEN` |
+| GitHub Actions secret | the daily workflow runs `fetch.js` to record history | Settings → Secrets and variables → Actions → `PARTICLE_TOKEN` |
+| `.env.local` (local only, gitignored) | developer machines | see *Running it locally* |
+
+The token never appears in the repository, in build output, or in an error
+message. `fetch.js` sends it only in an `Authorization` header and scrubs
+credential-shaped text out of anything bound for a log, because a Netlify build
+log is a public artefact.
+
+### Rotating the token
+
+Create the replacement before revoking the old one — the two overlap happily,
+since nothing about the call is stateful. Mint a new API user on product 18173
+scoped to `devices:list`, update the Netlify environment variable and the
+GitHub Actions secret, then trigger a build and confirm it goes green before
+deleting the old API user in the Console. If you revoke first, the next build
+fails with `HTTP 401 — the token was rejected`, the published page stays up
+untouched, and the fix is simply to set the new value. Rotation is therefore
+safe to do at any time; the failure mode is a stale page, never a wrong one.
+
+If a token is ever exposed, revoke it first and accept the failed builds. A
+`devices:list` token can only enumerate device metadata, but it should still be
+treated as a credential.
 
 ---
 
