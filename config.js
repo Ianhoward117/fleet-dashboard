@@ -22,7 +22,6 @@ const SHEET_IDS = {
   wo_6197: '1aBSCjtVAgPVE54WhvkG2M4rHX5RRYoYrwh7yE5JQxHo',
   wo_9502: '1SKzTkrNG2d727boPAKMRITDGHseUs3_QLpkd22JYUGo',
   wo_6178: '1Hw0pYIWKSIOp8TRego3QayW4IlXLe0CPeGoyKSvr3Po',
-  wo_9829: '1ac_Lbr66Xwz2_p9TrHZhchhgJwbTIiQNYYBbkI6EgeM',
 };
 
 // Where the built dashboard is published. The daily workflow checks this URL
@@ -44,9 +43,11 @@ const SITE_URL = 'https://ss-fleet-rxsm.netlify.app';
  *                 property has no registry coverage at all (6197)
  *   tag         - optional status pill shown next to the name, or null
  *
- * The Lab_P2 and Fort Custer Education Center tabs exist in the registry
- * workbook but are deliberately out of scope: they are not listed here and
- * therefore never reach the page.
+ * The Lab_P2, Fort Custer Education Center and ESA 9829 tabs exist in the
+ * registry workbook but are deliberately out of scope: they are not listed
+ * here and therefore never reach the page. 9829 was fully uninstalled on
+ * 2026-08-19; its tab is retained in the workbook for a later phase that
+ * reuses it as an exclusion list.
  */
 const PROPERTIES = [
   {
@@ -69,13 +70,6 @@ const PROPERTIES = [
     sheetKey: 'wo_9502',
     registryTab: 'ESA 9502 - Austin - Austin Airp',
     tag: 'active-mode paused',
-  },
-  {
-    code: '9829',
-    name: 'Austin - Northwest Research',
-    sheetKey: 'wo_9829',
-    registryTab: 'ESA 9829 - Austin - Northwest',
-    tag: 'offboarding',
   },
 ];
 
