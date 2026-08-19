@@ -5,11 +5,14 @@
  *
  * Everything an operator is likely to edit lives in this one file:
  *   - SHEET_IDS   : which Google Sheets workbooks to pull
+ *   - PARTICLE    : the one Particle Cloud API endpoint this build may call
  *   - PROPERTIES  : display metadata + page order for each property
  *   - THRESHOLDS  : the cutoffs that drive buckets and colour-coded badges
  *
- * Nothing here is a secret. Every workbook below is fetched over a public,
- * unauthenticated export URL, which is what lets Netlify build this itself.
+ * Nothing in this file is a secret. Every workbook is fetched over a public,
+ * unauthenticated export URL. The Particle call needs a token, but the token
+ * itself lives only in PARTICLE_TOKEN - .env.local locally, a Netlify
+ * environment variable in production - and never in this repository.
  */
 
 // ---------------------------------------------------------------------------
@@ -28,6 +31,61 @@ const SHEET_IDS = {
 // after triggering a rebuild, so a refresh that silently stops working turns
 // into a failed workflow rather than a page that quietly goes stale.
 const SITE_URL = 'https://ss-fleet-rxsm.netlify.app';
+
+// ---------------------------------------------------------------------------
+// Particle Cloud API  (v2: heartbeat/liveness source)
+// ---------------------------------------------------------------------------
+
+/**
+ * Heartbeats come from the Particle Cloud API as of v2. Battery, room mapping
+ * and triage status stay on the sheets: the probe (probe/FINDINGS.md) proved
+ * battery is not exposed by the Cloud API at all, and no room identifier ever
+ * appears in a Particle payload.
+ *
+ * DELIBERATELY NARROW. The product device list is the only endpoint this
+ * pipeline is permitted to call, ever. It is a plain read of cloud-held
+ * records and touches no hardware. Anything that commands or wakes a device -
+ * function calls, ping/signal/rename/claim/flash, and the per-device vitals
+ * GET, which asks the device to report - is out of bounds: these are physical
+ * units plumbed into occupied hotel water lines.
+ *
+ * The token is supplied out-of-band via PARTICLE_TOKEN and must never be
+ * written into this file, logged, or committed.
+ */
+const PARTICLE = {
+  productId: 18173,
+  apiBase: 'https://api.particle.io',
+  perPage: 100, // 879 devices at time of writing -> ~9 pages
+  pacingMs: 260, // <= 4 req/sec, the ceiling agreed for this fleet
+  maxRetries: 2, // then fail the build loudly rather than render a partial fleet
+  tokenEnv: 'PARTICLE_TOKEN',
+};
+
+// The single permitted endpoint. Derived from productId so there is one place
+// to change it and no way to accidentally point at a device-level route.
+PARTICLE.devicesPath = () => '/v1/products/' + PARTICLE.productId + '/devices';
+
+// ---------------------------------------------------------------------------
+// Registry tabs read for exclusion only
+// ---------------------------------------------------------------------------
+
+/**
+ * These registry tabs are read solely to learn which Particle device IDs are
+ * NOT part of the in-scope fleet, so they can be filtered out of the
+ * "live but unmapped" reconciliation list. Their devices are never rendered
+ * anywhere on the page.
+ *
+ *   The Lab_P2                     - bench/lab hardware
+ *   Fort Custer Education Center   - out of scope by the brief
+ *   ESA 9829 - Austin - Northwest  - property fully uninstalled 2026-08-19
+ *
+ * Tab names must match the registry workbook exactly.
+ */
+const EXCLUDED_REGISTRY_TABS = [
+  'The Lab_P2',
+  'Fort Custer Education Center',
+  'ESA 9829 - Austin - Northwest',
+];
 
 // ---------------------------------------------------------------------------
 // Properties
@@ -112,6 +170,24 @@ const THRESHOLDS = {
   },
 
   /**
+   * Age of a property's battery readings, in days, measured from build time
+   * against each row's LastTimestamp. This drives the per-property freshness
+   * badge as of v2: heartbeats are now live at build time, so battery is the
+   * only part of a property's data that can meaningfully go stale.
+   *
+   * Same cutoffs and tones as the old snapshot badge, so the colours on the
+   * rollup keep meaning what operators already read them as meaning.
+   */
+  batteryAge: {
+    confirmed: true, // mirrors the confirmed heartbeatAge cutoffs
+    buckets: [
+      { key: 'current', label: 'Current', maxDays: 2, tone: 'good' },
+      { key: 'aging', label: 'Aging', maxDays: 7, tone: 'warn' },
+      { key: 'stale', label: 'Stale', maxDays: null, tone: 'bad' },
+    ],
+  },
+
+  /**
    * Battery voltage cutoffs, in volts. Supplied by Ian on 2026-08-11.
    *
    *   >= 3.6        healthy
@@ -129,4 +205,11 @@ const THRESHOLDS = {
   },
 };
 
-module.exports = { SHEET_IDS, SITE_URL, PROPERTIES, THRESHOLDS };
+module.exports = {
+  SHEET_IDS,
+  SITE_URL,
+  PARTICLE,
+  EXCLUDED_REGISTRY_TABS,
+  PROPERTIES,
+  THRESHOLDS,
+};
