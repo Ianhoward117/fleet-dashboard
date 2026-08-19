@@ -4,12 +4,19 @@
  * Stage 2 of the pipeline: merge registry + telemetry + triage into one
  * clean data/normalized.json, plus the reconciliation lists.
  *
- * Three sources disagree with each other on purpose:
+ * Four sources disagree with each other on purpose:
  *   - Room Status          what a human last decided about a room
- *   - py_export_*          what the devices actually reported
+ *   - Particle API         when each device was actually last heard (v2)
+ *   - py_export_*          battery voltages, and the room<->device mapping
  *   - registry tabs        what we believe we installed
  * Reconciliation is where those disagreements get written down instead of
  * silently resolved.
+ *
+ * v2 changed where liveness comes from. Heartbeats are now the Particle
+ * device list, read fresh at build time, so days-silent means "vs now" and
+ * no longer "vs whenever this property was last exported". Battery, rooms
+ * and triage status still come from the sheets: the probe proved battery is
+ * not in the Cloud API and no room identifier ever appears in one.
  *
  * Everything that leaves this file is already normalized: no "NA", no
  * "#N/A", no "No device in room", no 102.0, no raw Date objects.
@@ -18,9 +25,10 @@
 const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
-const { PROPERTIES, THRESHOLDS } = require('./config');
+const { PROPERTIES, THRESHOLDS, EXCLUDED_REGISTRY_TABS } = require('./config');
 
 const RAW_DIR = path.join(__dirname, 'data', 'raw');
+const PARTICLE_FILE = path.join(RAW_DIR, 'particle-devices.json');
 const OUT_FILE = path.join(__dirname, 'data', 'normalized.json');
 const DAY_MS = 86400000;
 
@@ -86,6 +94,14 @@ function normRoom(v) {
 }
 
 const iso = (d) => (d instanceof Date && !isNaN(d) ? d.toISOString() : null);
+
+/** Median of a numeric array; null when empty. Used for battery-age summaries. */
+function median(nums) {
+  if (!nums.length) return null;
+  const a = [...nums].sort((x, y) => x - y);
+  const mid = Math.floor(a.length / 2);
+  return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+}
 const round = (n, p = 2) => (n === null || n === undefined ? null : Math.round(n * 10 ** p) / 10 ** p);
 
 // ---------------------------------------------------------------------------
@@ -173,6 +189,90 @@ function batteryClass(volts) {
   if (volts >= t.okAbove) return 'ok';
   if (volts >= t.warnAbove) return 'warn';
   return 'critical';
+}
+
+// ---------------------------------------------------------------------------
+// Particle device list
+// ---------------------------------------------------------------------------
+
+/**
+ * Read what fetch.js pulled from the Particle API.
+ *
+ * This is the heartbeat source of record as of v2. It is a strict superset of
+ * the fleet we render: the product holds every device ever claimed, including
+ * inventory, the lab, and decommissioned properties. Mapping to rooms happens
+ * downstream; here we only index it.
+ */
+function readParticleDevices() {
+  if (!fs.existsSync(PARTICLE_FILE)) {
+    throw new Error(
+      `NORMALIZE FAILED: missing ${PARTICLE_FILE}\n` +
+        `  Run fetch.js first (build.js does this). Heartbeats come from the\n` +
+        `  Particle API as of v2 and there is no fallback - rendering without\n` +
+        `  them would show every device as silent.`
+    );
+  }
+  const raw = JSON.parse(fs.readFileSync(PARTICLE_FILE, 'utf8'));
+  if (!raw || !Array.isArray(raw.devices) || !raw.devices.length) {
+    throw new Error(
+      `NORMALIZE FAILED: ${PARTICLE_FILE} contains no devices.\n` +
+        `  Refusing to render a fleet that would read as entirely silent.`
+    );
+  }
+  const byId = new Map();
+  for (const d of raw.devices) if (d && d.id) byId.set(d.id, d);
+  return { byId, pulledAt: raw.pulledAt || null, count: raw.devices.length, devices: raw.devices };
+}
+
+/** First esa_#### / esa-#### group on a device, as a bare property code. */
+function particleGroupCode(device) {
+  for (const g of device.groups || []) {
+    const m = /^esa[-_](\d{4})/i.exec(String(g));
+    if (m) return { code: m[1], group: g };
+  }
+  return null;
+}
+
+/**
+ * Device IDs that are deliberately out of scope: the lab bench, Fort Custer,
+ * and the fully-uninstalled 9829. Read from the registry workbook purely so
+ * they can be filtered OUT of the live-but-unmapped list. Nothing from these
+ * tabs is ever rendered.
+ *
+ * A missing tab fails the build rather than silently disabling the filter -
+ * that would let decommissioned hardware surface on the page.
+ */
+function readExcludedDeviceIds(registryWb) {
+  const byTab = {};
+  const all = new Set();
+  for (const tab of EXCLUDED_REGISTRY_TABS) {
+    if (!registryWb.SheetNames.includes(tab)) {
+      throw new Error(
+        `NORMALIZE FAILED: registry workbook has no tab ${JSON.stringify(tab)}.\n` +
+          `  It is listed in EXCLUDED_REGISTRY_TABS and is read to keep out-of-scope\n` +
+          `  devices off the page. Refusing to build with the filter disabled.\n` +
+          `  Tabs present: ${registryWb.SheetNames.map((n) => JSON.stringify(n)).join(', ')}`
+      );
+    }
+    const ids = new Set();
+    for (const r of sheetRows(registryWb, tab)) {
+      const id = normStr(r['Device ID']);
+      if (id) {
+        ids.add(id);
+        all.add(id);
+      }
+    }
+    byTab[tab] = ids.size;
+  }
+  // Logged here rather than returned into the payload: these tab names are
+  // out-of-scope site names, and render.js rightly refuses to let them into
+  // normalized data at all. The build log is the correct place for them.
+  console.log('NORMALIZE  exclusion tabs read (devices kept off the page)');
+  for (const [tab, count] of Object.entries(byTab)) {
+    console.log(`  ${JSON.stringify(tab).padEnd(38)} ${String(count).padStart(4)} device ids`);
+  }
+  console.log(`  ${'total distinct excluded ids'.padEnd(38)} ${String(all.size).padStart(4)}`);
+  return { all, byTab };
 }
 
 // ---------------------------------------------------------------------------
@@ -340,8 +440,21 @@ function readRegistry(wb, tabName) {
 
 function normalize() {
   const registryTabs = PROPERTIES.filter((p) => p.registryTab).map((p) => p.registryTab);
-  const registryWb = readWorkbook('registry', registryTabs);
+  // Exclusion tabs are required too: without them the live-but-unmapped list
+  // would leak lab and 9829 hardware onto the page.
+  const registryWb = readWorkbook('registry', [...registryTabs, ...EXCLUDED_REGISTRY_TABS]);
   const builtAt = new Date();
+
+  const particle = readParticleDevices();
+  const excluded = readExcludedDeviceIds(registryWb);
+
+  // Every device ID this build considers "mapped" to an in-scope room, filled
+  // in as each property is merged. Anything live in the API and absent from
+  // this set is what reconciliation reports as live-but-unmapped.
+  const mappedDeviceIds = new Set();
+  const unknownToParticle = [];
+  let joinAttempted = 0;
+  let joinMatched = 0;
 
   const properties = [];
   const triage = [];
@@ -378,17 +491,37 @@ function normalize() {
         (deviceId && bat.byDevice.get(deviceId)) || bat.byRoom.get(key) || null;
       const volts = (batRec && batRec.volts !== null ? batRec.volts : t.battery);
 
-      // Days silent is measured against this property's own snapshot, which
-      // is what the sheet's own "days with no heartbeat" column means.
-      let daysSilent = null;
-      if (tele && tele.lastHeartbeat && currentTime) {
-        daysSilent = (currentTime - tele.lastHeartbeat) / DAY_MS;
-      } else if (t.daysNoHeartbeat !== null) {
-        daysSilent = t.daysNoHeartbeat;
+      // Battery readings are collected intermittently and their timestamps are
+      // not precise, so this age is reported as approximate on the page. It is
+      // still the honest answer to "how old is this voltage".
+      const batteryTimestamp = batRec ? batRec.lastTimestamp : null;
+      const batteryAgeDays = batteryTimestamp ? (builtAt - batteryTimestamp) / DAY_MS : null;
+
+      // --- heartbeat: the Particle API is the source of record as of v2 ---
+      // Joined on ParticleDeviceId <-> device.id. The API is a strict superset
+      // of what the exports carry, so a mapped device missing from it is a real
+      // anomaly and gets written down rather than quietly bucketed as silent.
+      if (deviceId) {
+        mappedDeviceIds.add(deviceId);
+        joinAttempted++;
+      }
+      const api = deviceId ? particle.byId.get(deviceId) || null : null;
+      if (deviceId && api) joinMatched++;
+      if (deviceId && !api) {
+        unknownToParticle.push({
+          property: prop.code,
+          propertyName: prop.name,
+          room: t.room.display,
+          deviceId,
+          deviceName,
+        });
       }
 
-      const lastHeartbeat = (tele && tele.lastHeartbeat) || t.lastHeartbeat || null;
-      const reporting = Boolean(tele && tele.lastHeartbeat);
+      const lastHeartbeat = api && api.last_heard ? new Date(api.last_heard) : null;
+      const reporting = Boolean(lastHeartbeat && !isNaN(lastHeartbeat));
+      // Measured against build time, because the source is now live. This
+      // deliberately supersedes the old export-relative figure.
+      const daysSilent = reporting ? (builtAt - lastHeartbeat) / DAY_MS : null;
 
       rooms.push({
         property: prop.code,
@@ -404,6 +537,8 @@ function normalize() {
         heartbeatBucket: bucketByDays(reporting ? daysSilent : null, THRESHOLDS.heartbeatAge),
         battery: round(volts, 3),
         batteryClass: batteryClass(volts),
+        batteryTimestamp: iso(batteryTimestamp),
+        batteryAgeDays: round(batteryAgeDays, 1),
         lastShower: iso(t.lastShower),
         daysNoShower: round(t.daysNoShower, 1),
         actionItem: t.actionItem,
@@ -465,6 +600,20 @@ function normalize() {
 
     const batteryHistogram = { ok: 0, warn: 0, critical: 0, unclassified: 0, unknown: 0 };
     for (const r of rooms) batteryHistogram[r.batteryClass] = (batteryHistogram[r.batteryClass] || 0) + 1;
+
+    // Battery age drives the per-property freshness badge as of v2: heartbeats
+    // are live at build time, so battery is the only thing that can go stale.
+    const batteryAges = rooms.map((r) => r.batteryAgeDays).filter((n) => n !== null && n !== undefined);
+    const batteryAgeMedian = median(batteryAges);
+    const batteryAgeOldest = batteryAges.length ? Math.max(...batteryAges) : null;
+    const batteryAge = {
+      readings: batteryAges.length,
+      roomsWithout: rooms.length - batteryAges.length,
+      medianDays: round(batteryAgeMedian, 1),
+      oldestDays: round(batteryAgeOldest, 1),
+      bucket: bucketByDays(batteryAgeMedian, THRESHOLDS.batteryAge),
+      approximate: true, // collector runs intermittently; timestamps are not precise
+    };
 
     // --- reconciliation ---------------------------------------------------
     const telemetryDeviceIds = new Set([...hb.byDevice.keys(), ...bat.byDevice.keys()]);
@@ -617,6 +766,7 @@ function normalize() {
       counts,
       heartbeatHistogram,
       batteryHistogram,
+      batteryAge,
       rooms,
     });
 
@@ -624,6 +774,106 @@ function normalize() {
       if (r.status === 'Issue' || r.status === 'Check') triage.push(r);
     }
   }
+
+  // -------------------------------------------------------------------------
+  // Fleet-level reconciliation against the Particle device list
+  // -------------------------------------------------------------------------
+
+  // The windows come from the confirmed heartbeat buckets so there is one
+  // source of truth for what "fresh" and "live" mean on this page.
+  const hbBuckets = THRESHOLDS.heartbeatAge.buckets;
+  const freshDays = (hbBuckets.find((b) => b.key === 'fresh') || {}).maxDays || 2;
+  const liveDays = (hbBuckets.find((b) => b.key === 'aging') || {}).maxDays || 7;
+
+  const ageOf = (d) => {
+    if (!d.last_heard) return null;
+    const t = new Date(d.last_heard);
+    return isNaN(t) ? null : (builtAt - t) / DAY_MS;
+  };
+
+  /**
+   * Live but unmapped: devices the cloud has heard from recently that do not
+   * correspond to any room we render. At 6178 this is mostly install progress
+   * rather than breakage - see the note attached below.
+   */
+  const liveButUnmapped = [];
+  const unmappedByGroup = {};
+  let unmappedStale = 0;
+  let excludedFiltered = 0;
+
+  for (const d of particle.devices) {
+    if (!d.id) continue;
+    if (mappedDeviceIds.has(d.id)) continue;
+
+    const age = ageOf(d);
+    const isLive = age !== null && age <= liveDays;
+
+    // Out-of-scope hardware is filtered before anything is recorded, so it can
+    // never reach the page. Counted only so the filter is auditable.
+    if (excluded.all.has(d.id)) {
+      if (isLive) excludedFiltered++;
+      continue;
+    }
+
+    if (!isLive) {
+      unmappedStale++;
+      continue;
+    }
+
+    const g = particleGroupCode(d);
+    const prop = g ? PROPERTIES.find((p) => p.code === g.code) : null;
+    liveButUnmapped.push({
+      property: prop ? prop.code : null, // null = fleet-level pool, no usable group
+      propertyName: prop ? prop.name : null,
+      deviceName: d.name || null,
+      deviceId: d.id,
+      deviceIdShort: String(d.id).slice(-6),
+      group: g ? g.group : null,
+      lastHeard: d.last_heard || null,
+      ageDays: round(age, 1),
+    });
+    const bucket = prop ? prop.code : 'fleet';
+    unmappedByGroup[bucket] = (unmappedByGroup[bucket] || 0) + 1;
+  }
+
+  // Freshest first: the newest arrivals are the ones worth chasing.
+  liveButUnmapped.sort((a, b) => (a.ageDays === null ? 1 : b.ageDays === null ? -1 : a.ageDays - b.ageDays));
+
+  // Priya owns the export pipeline; this is her reading of what the list means.
+  const liveUnmappedNote =
+    'Exports include a device only after its first data lands, and 6178 installs ' +
+    'continued into June. Live-but-unmapped at 6178 therefore mostly means ' +
+    '"installed, awaiting registry/export", not failure.';
+
+  if (unknownToParticle.length) {
+    notes.push({
+      property: null,
+      propertyName: null,
+      severity: 'warn',
+      text:
+        `${unknownToParticle.length} mapped device(s) are absent from the Particle product ` +
+        `device list entirely. The API is a strict superset of the exports, so this should ` +
+        `be zero; these rooms are bucketed as never-reporting and listed in reconciliation.`,
+    });
+  }
+
+  const particleSummary = {
+    pulledAt: particle.pulledAt,
+    fleetDevices: particle.count,
+    mappedDevices: mappedDeviceIds.size,
+    joinAttempted,
+    joinMatched,
+    joinRatePct: joinAttempted ? round((joinMatched / joinAttempted) * 100, 1) : null,
+    unknownToParticle: unknownToParticle.length,
+    freshWindowDays: freshDays,
+    liveWindowDays: liveDays,
+    unmappedLive: liveButUnmapped.length,
+    unmappedLiveByGroup: unmappedByGroup,
+    unmappedStale,
+    excludedDeviceIds: excluded.all.size,
+    excludedTabs: EXCLUDED_REGISTRY_TABS.length, // names deliberately not carried in the payload
+    excludedLiveFiltered: excludedFiltered,
+  };
 
   // Triage order: worst first - Issue before Check, then longest silent.
   triage.sort((a, b) => {
@@ -633,6 +883,11 @@ function normalize() {
 
   const out = {
     builtAt: iso(builtAt),
+    // Heartbeats are read live from the Particle API at build time, so this
+    // single stamp covers the whole fleet. It replaces the old per-property
+    // heartbeat staleness, which existed only because the exports were stale.
+    heartbeatsAsOf: iso(builtAt),
+    particle: particleSummary,
     thresholds: THRESHOLDS,
     properties,
     triage,
@@ -642,6 +897,9 @@ function normalize() {
       roomDeviceMismatches,
       orphanTelemetryRooms,
       duplicateRoomRows,
+      unknownToParticle,
+      liveButUnmapped,
+      liveUnmappedNote,
       notes,
     },
   };
@@ -657,16 +915,20 @@ function report(data) {
   const lpad = (s, n) => String(s).padStart(n);
   console.log(
     `  ${pad('prop', 6)}${pad('name', 24)}${lpad('rooms', 6)}${lpad('Ok', 5)}${lpad('Issue', 6)}${lpad('Check', 6)}` +
-      `${lpad('rept', 6)}${lpad('silent', 7)}${lpad('reg', 5)}  snapshot`
+      `${lpad('rept', 6)}${lpad('silent', 7)}${lpad('reg', 5)}  battery age (med/oldest)   export snapshot`
   );
   for (const p of data.properties) {
     const c = p.counts;
     const snap = p.snapshot.currentTime
       ? `${p.snapshot.currentTime.slice(0, 10)} (${p.snapshot.ageDays}d, ${p.snapshot.bucket})`
       : 'none';
+    const ba = p.batteryAge;
+    const baStr = ba.readings
+      ? `${ba.medianDays}d / ${ba.oldestDays}d (${ba.bucket})`.padEnd(24)
+      : 'no readings'.padEnd(24);
     console.log(
       `  ${pad(p.code, 6)}${pad(p.name.slice(0, 23), 24)}${lpad(c.rooms, 6)}${lpad(c.ok, 5)}${lpad(c.issue, 6)}` +
-        `${lpad(c.check, 6)}${lpad(c.reporting, 6)}${lpad(c.silent, 7)}${lpad(p.hasRegistry ? c.registryDevices : '-', 5)}  ${snap}`
+        `${lpad(c.check, 6)}${lpad(c.reporting, 6)}${lpad(c.silent, 7)}${lpad(p.hasRegistry ? c.registryDevices : '-', 5)}  ${baStr}   ${snap}`
     );
   }
 
@@ -699,6 +961,21 @@ function report(data) {
     console.log(`  ${pad(p.code, 6)}` + Object.entries(b).map(([k, v]) => `${k}=${v}`).join('  '));
   }
 
+  const q = data.particle;
+  console.log('\nNORMALIZE  Particle join (heartbeat source)');
+  console.log(`  device list pulled      : ${q.pulledAt}`);
+  console.log(`  devices in product      : ${q.fleetDevices}`);
+  console.log(`  mapped to an in-scope room: ${q.mappedDevices}`);
+  console.log(
+    `  join                    : ${q.joinMatched}/${q.joinAttempted} matched (${q.joinRatePct}%)`
+  );
+  console.log(`  unknown to Particle     : ${q.unknownToParticle}   [expect 0]`);
+  console.log(`  live but unmapped (<=${q.liveWindowDays}d): ${q.unmappedLive}`);
+  console.log(`    by group              : ${JSON.stringify(q.unmappedLiveByGroup)}`);
+  console.log(`  unmapped and stale (>${q.liveWindowDays}d) : ${q.unmappedStale}  (count only, not listed)`);
+  console.log(`  excluded device ids     : ${q.excludedDeviceIds} across ${q.excludedTabs} tabs (listed above)`);
+  console.log(`  excluded devices that were live+unmapped and filtered out: ${q.excludedLiveFiltered}`);
+
   const r = data.reconciliation;
   console.log('\nNORMALIZE  reconciliation summary');
   console.log(`  ghosts (registered, never seen in telemetry) : ${r.ghosts.length}`);
@@ -706,6 +983,8 @@ function report(data) {
   console.log(`  room/device mismatches : ${r.roomDeviceMismatches.length}`);
   console.log(`  telemetry rooms not listed in triage : ${r.orphanTelemetryRooms.length}`);
   console.log(`  duplicated room rows : ${r.duplicateRoomRows.length}`);
+  console.log(`  unknown to Particle : ${r.unknownToParticle.length}`);
+  console.log(`  live but unmapped : ${r.liveButUnmapped.length}`);
   console.log(`  notes : ${r.notes.length}`);
   for (const n of r.notes) console.log(`    - [${n.property}/${n.severity}] ${n.text}`);
 

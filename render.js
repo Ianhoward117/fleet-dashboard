@@ -125,9 +125,12 @@ function assertSane(data) {
     if (batSum !== c.rooms) problems.push(`${p.code}: battery histogram sums to ${batSum}, expected ${c.rooms}`);
   }
 
-  // Out-of-scope sites must never reach the page.
+  // Out-of-scope sites must never reach the page. 9829 is matched on its
+  // registry tab name rather than the bare number, because a bare "9829"
+  // would false-positive on any device id that happens to contain those hex
+  // digits.
   const blob = JSON.stringify(data);
-  for (const banned of ['The Lab', 'Fort Custer']) {
+  for (const banned of ['The Lab', 'Fort Custer', 'ESA 9829']) {
     if (blob.includes(banned)) problems.push(`out-of-scope site "${banned}" appears in the payload`);
   }
 
