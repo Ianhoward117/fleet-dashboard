@@ -70,8 +70,12 @@ Everything else is vanilla Node and vanilla browser JS.
 - **Property names** (corrected — the brief had 6178 and 6197 transposed;
   these match the registry tab names):
   6197 Round Rock - Southwest · 6178 Austin - Southwest ·
-  9502 Austin - Airport (`active-mode paused`) ·
-  9829 Austin - Northwest Research (`offboarding`)
+  9502 Austin - Airport (`active-mode paused`)
+- **9829 fully uninstalled 2026-08-19; removed from the dashboard same day**
+  (Ian). Registry tab retained in the workbook, unread — a later phase reuses
+  it as an exclusion list. History files before that date still carry 9829 and
+  are left as recorded; `render.js` filters non-configured properties out of
+  the page payload.
 - **Tabs:** Fleet rollup (default) → All rooms → Reconciliation. The old
   triage tab is folded into All rooms as the `Issue + Check` status filter;
   legacy `?v=triage` links still resolve to it.
@@ -87,13 +91,14 @@ Everything else is vanilla Node and vanilla browser JS.
 
 ## Current state (2026-08-19)
 
-- All four properties render; counts tie exactly to the source sheets:
-  421 rooms, 185 Ok / 197 Issue / 39 Check, 236 needing attention.
-- Daily refresh has run unattended and green on 16, 17 and 18 Aug.
-- 3 days of history captured. **All trends are flat** (29/69/23/76 unchanged)
+- All three properties render; counts tie exactly to the source sheets:
+  303 rooms, 148 Ok / 121 Issue / 34 Check, 155 needing attention.
+  (Was 421 / 185 / 197 / 39 / 236 before 9829 was removed.)
+- Daily refresh has run unattended and green on 16-19 Aug.
+- 4 days of history captured. **All trends are flat** (29/69/23 unchanged)
   because the `py_export_*` sheets have not been re-exported — the dashboard
   is faithfully reporting stale sources, not malfunctioning.
-- Snapshot ages as of 19 Aug: 6197 ~8d, 9829 ~18d, 9502 ~35d, 6178 ~56d.
+- Snapshot ages as of 19 Aug: 6197 ~9d, 9502 ~36d, 6178 ~56d.
 
 ## Open items
 

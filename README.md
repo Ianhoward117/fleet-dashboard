@@ -22,7 +22,7 @@ way you would treat the sheets themselves.
 | **All rooms** | Every room in the fleet, one line each, sorted worst-first: `Issue`, then `Check`, then `Ok`, longest-silent first within each. Filter by property, status, action type and battery class; free-text search across room, device, action and notes; every column sorts. Selecting **Issue + Check** turns this into the ops triage queue, which is also the consolidated diagnostic register. |
 | **Reconciliation** | Where the three sources disagree: ghosts, unregistered reporters, room/device mismatches, telemetry from unlisted rooms, duplicated room rows, and per-property caveats. |
 
-The status filter carries live counts — `Issue + Check (236)`, `Ok (185)` — so
+The status filter carries live counts — `Issue + Check (155)`, `Ok (148)` — so
 the size of the queue is visible without applying the filter.
 
 ### Sharing a view
@@ -54,17 +54,17 @@ point is visible on the row itself.
 ## Architecture
 
 ```
-  Google Sheets (5 workbooks, public export URLs, read-only)
+  Google Sheets (4 workbooks, public export URLs, read-only)
         │
         │   registry ── master device spreadsheet, one tab per property
         │   wo_6197 ─┐
         │   wo_6178  ├─ one work order workbook per property, 3 sheets each:
-        │   wo_9502  │     Room Status              (human triage layer)
-        │   wo_9829 ─┘     py_export_batterystatus  (voltages)
+        │   wo_9502 ─┘     Room Status              (human triage layer)
+        │                  py_export_batterystatus  (voltages)
         │                  py_export_heartbeatstatus(heartbeats + snapshot time)
         ▼
   ┌──────────────┐
-  │  fetch.js    │  downloads all 5 workbooks → data/raw/  (gitignored)
+  │  fetch.js    │  downloads all 4 workbooks → data/raw/  (gitignored)
   │              │  FAILS THE BUILD on any HTTP error, non-xlsx payload,
   │              │  or missing tab. Never renders a partial fleet.
   └──────┬───────┘
@@ -172,6 +172,15 @@ is still collecting.
 
 A same-day re-run overwrites that day's file rather than appending, so forcing
 extra refreshes never distorts the trend.
+
+History files dated before 2026-08-19 still contain a block for property 9829,
+which was removed from the dashboard that day. They are left exactly as
+recorded. `render.js` drops blocks for properties no longer in `config.js`
+before embedding the series, so a removed property leaves no trace on the page
+and the surviving properties keep their full, unbroken trend lines. Note that
+the rollup sparklines are per-property, so removing 9829 produces no step in
+any line on the page; what changes is fleet-wide totals quoted elsewhere
+(303 rooms rather than 421, 155 triage rows rather than 236).
 
 To rebuild history locally without committing anything:
 
@@ -300,7 +309,7 @@ rediscover them.
    rows carry a duration string (`"242 days 07:46:38"`) instead of a
    timestamp. That column is ignored entirely; heartbeats come from
    `py_export_heartbeatstatus`.
-4. **Room Status header dates lag the machine export.** At 6178 and 9829 the
+4. **Room Status header dates lag the machine export.** At 6178 the
    human-typed header date is weeks older than the export's `CurrentTime`.
    Freshness badges use `CurrentTime`; the divergence is flagged in
    Reconciliation.
@@ -344,8 +353,8 @@ system has. It would need to live in a Netlify environment variable, and the
 
 ## Scope
 
-**In:** fleet health, triage, reconciliation, for properties 6197, 6178, 9502
-and 9829.
+**In:** fleet health, triage, reconciliation, for properties 6197, 6178 and
+9502.
 
 **Out:** the Particle API (v2), authentication of any kind, The Lab and Fort
 Custer, savings/water metrics, and **any write back to any Google Sheet** —
