@@ -728,10 +728,14 @@
     var w = 132, h = 30, pad = 2;
     var vals = pts.map(function (p) { return p.issue; });
     var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+    // An unchanged series has no range to scale against. Drawing it with the
+    // usual formula pins it to the bottom of the box, which reads as zero
+    // rather than as flat, so centre it instead.
+    var flat = max === min;
     var span = (max - min) || 1;
     var d = pts.map(function (p, i) {
       var x = pad + (i / (pts.length - 1)) * (w - pad * 2);
-      var y = h - pad - ((p.issue - min) / span) * (h - pad * 2);
+      var y = flat ? h / 2 : h - pad - ((p.issue - min) / span) * (h - pad * 2);
       return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
     }).join(' ');
     var first = vals[0], last = vals[vals.length - 1];
