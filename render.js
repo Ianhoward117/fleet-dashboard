@@ -14,7 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { PROPERTIES } = require('./config');
+const { PROPERTIES, TRENDS } = require('./config');
 
 const DATA_FILE = path.join(__dirname, 'data', 'normalized.json');
 const TEMPLATE_FILE = path.join(__dirname, 'template.html');
@@ -39,14 +39,22 @@ function loadHistory() {
       console.warn(`RENDER  skipping unreadable history file: ${name}`);
     }
   }
-  // Keep the page light: a rolling window is enough to see a direction.
+  // Keep the page light: TRENDS.windowDays is what the sparklines cover, so
+  // shipping more than that is payload nobody looks at.
+  //
   // Also drop per-property blocks for properties no longer in config: history
   // files are an immutable record and keep them, but a removed property has no
   // card on the page, so shipping its old counts is dead weight in the payload
   // (and leaves a decommissioned property named in a page that should not
-  // mention it). Fleet-level fields on each record are left exactly as recorded.
+  // mention it). Fleet-level fields on each record are left exactly as
+  // recorded - which is why the fleet triage line still steps 236 -> 155 on
+  // 2026-08-20 and needs the annotation in config to explain itself.
+  //
+  // Absent fields are left absent. Older records predate liveUnder2d and
+  // unmappedLive and must arrive at the page still missing them, so the page
+  // can draw a gap. Defaulting them to 0 here would invent a cliff.
   const live = new Set(PROPERTIES.map((p) => p.code));
-  return records.slice(-90).map((rec) => {
+  return records.slice(-TRENDS.windowDays).map((rec) => {
     if (!rec || !rec.properties) return rec;
     const properties = {};
     for (const [code, counts] of Object.entries(rec.properties)) {
@@ -203,6 +211,9 @@ function render() {
     reconciliation: data.reconciliation,
     properties: data.properties.map(({ rooms: _rooms, ...rest }) => rest),
     history: loadHistory(),
+    // Window length and fleet-series annotations. Editing trends is a
+    // config.js job, not a template.html job.
+    trends: TRENDS,
   };
 
   let html = fs.readFileSync(TEMPLATE_FILE, 'utf8');
@@ -234,7 +245,8 @@ function render() {
   );
   console.log(
     payload.history.length
-      ? `RENDER  ${payload.history.length} day(s) of history for trend lines`
+      ? `RENDER  ${payload.history.length} day(s) of history for trend lines ` +
+          `(${TRENDS.windowDays}-day window)`
       : 'RENDER  no history yet - trends begin once the daily workflow has run'
   );
   return OUT_FILE;

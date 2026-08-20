@@ -205,6 +205,41 @@ const THRESHOLDS = {
   },
 };
 
+// ---------------------------------------------------------------------------
+// Trends
+// ---------------------------------------------------------------------------
+
+/**
+ * Controls the sparklines drawn from the committed daily records in history/.
+ *
+ *   windowDays  - how many trailing days the sparklines cover. render.js ships
+ *                 exactly this many records to the page, so raising it makes
+ *                 the payload bigger. Nothing is lost either way: history/
+ *                 keeps every record ever written.
+ *
+ *   annotations - vertical markers drawn on the FLEET-level series only, for
+ *                 events that move a fleet total without anything in the field
+ *                 having changed. Per-property series never need one: a
+ *                 property's own counts are unaffected by another property
+ *                 leaving the dashboard.
+ *
+ * ADD AN ENTRY HERE whenever a property is added to or removed from
+ * PROPERTIES. Without one, the fleet line shows an unexplained step and the
+ * next person to look reads a clerical change as a fleet event - which is
+ * precisely what the 2026-08-20 entry below exists to prevent. Pre-2026-08-20
+ * records still carry 9829 as recorded (236 triage rows against today's 155),
+ * because history files are a record and are never rewritten.
+ *
+ * THE GAP RULE, which the page implements and this file is the place to state:
+ * a record written before a field existed carries no value for that field.
+ * That is a gap - the line breaks and resumes. It is never a zero. Coercing an
+ * absent field to 0 would draw a cliff that never happened.
+ */
+const TRENDS = {
+  windowDays: 30,
+  annotations: [{ date: '2026-08-20', label: '9829 removed' }],
+};
+
 module.exports = {
   SHEET_IDS,
   SITE_URL,
@@ -212,4 +247,5 @@ module.exports = {
   EXCLUDED_REGISTRY_TABS,
   PROPERTIES,
   THRESHOLDS,
+  TRENDS,
 };

@@ -209,6 +209,34 @@
   .spark .sd { font-size: 11.5px; color: var(--ink-soft); }
   .spark .sd b { color: var(--ink); font-variant-numeric: tabular-nums; }
   .collecting { font-size: 11.5px; color: var(--ink-faint); }
+  .collecting .sv { color: var(--ink); font-variant-numeric: tabular-nums; font-weight: 700; }
+
+  /* One key line per series, so the last value is readable as plain text
+     without hovering anything - the page is used one-handed in a corridor. */
+  .spark .sd .sk { display: block; white-space: nowrap; }
+  .spark .sd .sk i { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 5px; }
+  .spark .sd .sdays { display: block; margin-top: 2px; }
+
+  /* ---------- fleet trend strip ---------- */
+  .fleet {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 13px 14px; margin-bottom: 12px;
+  }
+  .fleet-hd { font-size: 15px; font-weight: 650; }
+  .fleet-grid { display: grid; gap: 10px 22px; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); }
+  /* Wider than a card sparkline, so it must be free to shrink and wrap. */
+  .fleet .spark { flex-wrap: wrap; }
+  .fleet .spark svg { flex: 0 1 auto; min-width: 0; max-width: 100%; height: auto; }
+  .annos { margin-top: 5px; font-size: 11px; color: var(--ink-faint); }
+  .anno i {
+    display: inline-block; width: 0; height: 9px;
+    border-left: 1px dashed var(--ink-faint); margin-right: 5px; vertical-align: -1px;
+  }
+  .fleetnote { margin-top: 5px; font-size: 11px; }
+  .trendcap {
+    margin-top: 11px; padding-top: 8px; border-top: 1px solid var(--line-soft);
+    font-size: 11px; color: var(--ink-faint);
+  }
 
   .cardnote { margin-top: 9px; font-size: 11.5px; color: var(--ink-faint); border-top: 1px solid var(--line-soft); padding-top: 7px; }
 
@@ -273,6 +301,12 @@
   .cardnote .await { font-weight: 600; }
   .cardnote .await a { color: inherit; }
   .freshness { margin-left: 0; width: 100%; text-align: left; }
+
+    /* Fleet sparklines are wider than a card's. Let them shrink to the screen
+       and let the value keys wrap underneath rather than overflow. */
+    .fleet { padding: 11px 12px; }
+    .fleet-grid { grid-template-columns: 1fr; gap: 4px 0; }
+    .fleet .spark { gap: 7px; }
   }
 </style>
 </head>
@@ -350,6 +384,9 @@
   </section>
 
   <section id="view-rollup" role="tabpanel">
+    <!-- Fleet-wide trends. Totals that only mean something across the whole
+         fleet live here rather than on any one property card. -->
+    <div class="fleet" id="fleetStrip"></div>
     <div class="cards" id="cards"></div>
   </section>
 
@@ -747,43 +784,158 @@
     }).join('') + '</div>';
   }
 
-  /* One line per property showing Issue count over time. Needs two points to
-     mean anything; below that the card says it is still collecting. */
-  function sparkline(code) {
-    var pts = [];
-    DATA.history.forEach(function (h) {
-      var p = h.properties && h.properties[code];
-      if (p) pts.push({ date: h.date, issue: p.issue });
+  // ----------------------------------------------------------- trend lines
+  /* Sparklines are drawn from the committed daily records in history/,
+     windowed by TRENDS.windowDays in config.js.
+
+     THE GAP RULE, which everything below exists to honour: a record written
+     before a field existed carries no value for that field. That is a GAP -
+     the line breaks and picks up again - and it is never a zero. liveUnder2d
+     and unmappedLive only begin on 2026-08-20, so coercing their absence to 0
+     would draw every one of those series falling off a cliff on a day when
+     nothing happened in the field at all, only a schema change. */
+  var TR = DATA.trends || { windowDays: 30, annotations: [] };
+  var HIST = DATA.history || [];
+
+  /* History dates are plain YYYY-MM-DD. new Date('2026-08-20') is parsed as
+     UTC midnight, which formats as the 19th anywhere west of Greenwich -
+     Austin included - so build the date in local terms instead. */
+  function fmtDay(ymd) {
+    if (!ymd) return '—';
+    var p = String(ymd).split('-');
+    if (p.length !== 3) return String(ymd);
+    var d = new Date(+p[0], +p[1] - 1, +p[2]);
+    return isNaN(d) ? String(ymd) : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+
+  /* undefined marks a gap. Only a real finite number is plotted: a missing
+     key, a null or a string all mean "not recorded", and none of them become
+     a zero. */
+  function seriesOf(pick) {
+    return HIST.map(function (h) {
+      var v = pick(h);
+      return (typeof v === 'number' && isFinite(v)) ? v : undefined;
     });
-    if (pts.length < 2) {
-      return '<div class="collecting">Collecting &mdash; ' + pts.length + ' day'
-        + (pts.length === 1 ? '' : 's') + ' recorded. A trend appears once the daily refresh has run twice.</div>';
-    }
-    var w = 132, h = 30, pad = 2;
-    var vals = pts.map(function (p) { return p.issue; });
-    var min = Math.min.apply(null, vals), max = Math.max.apply(null, vals);
+  }
+  function propSeries(code, field) {
+    return seriesOf(function (h) {
+      var p = h.properties && h.properties[code];
+      return p ? p[field] : undefined;
+    });
+  }
+  function pointsOf(vals) {
+    var out = [];
+    for (var i = 0; i < vals.length; i++) if (vals[i] !== undefined) out.push({ i: i, v: vals[i] });
+    return out;
+  }
+  function lastOf(vals) { var p = pointsOf(vals); return p.length ? p[p.length - 1].v : null; }
+  function everNonZero(vals) {
+    return pointsOf(vals).some(function (p) { return p.v !== 0; });
+  }
+
+  /* One SVG, one or more series, gaps preserved.
+
+       - x is the record's index in the window, so a gap occupies its real
+         horizontal width instead of the line closing over it
+       - y uses a domain shared by every series in the chart, which keeps flat
+         lines at their true relative heights rather than collapsing them all
+         onto one centred track
+       - a run of exactly one point is drawn as a dot: there is no segment to
+         draw through a single point, and skipping it would hide a day that
+         was genuinely recorded */
+  function trendSvg(series, opts) {
+    opts = opts || {};
+    var w = opts.w || 132, h = opts.h || 30, pad = 2.5;
+    var n = HIST.length;
+
+    var all = [];
+    series.forEach(function (s) { pointsOf(s.vals).forEach(function (p) { all.push(p.v); }); });
+    if (!all.length) return '';
+
+    var min = Math.min.apply(null, all), max = Math.max.apply(null, all);
     // An unchanged series has no range to scale against. Drawing it with the
     // usual formula pins it to the bottom of the box, which reads as zero
     // rather than as flat, so centre it instead.
     var flat = max === min;
     var span = (max - min) || 1;
-    var d = pts.map(function (p, i) {
-      var x = pad + (i / (pts.length - 1)) * (w - pad * 2);
-      var y = flat ? h / 2 : h - pad - ((p.issue - min) / span) * (h - pad * 2);
-      return (i ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
-    }).join(' ');
-    var first = vals[0], last = vals[vals.length - 1];
-    var delta = last - first;
-    var tone = delta > 0 ? 'bad' : delta < 0 ? 'good' : 'flat';
-    var arrow = delta > 0 ? '▲' : delta < 0 ? '▼' : '—';
-    return '<div class="spark">'
-      + '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '" aria-hidden="true">'
-        + '<path d="' + d + '" fill="none" stroke="var(--brand)" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>'
-      + '</svg>'
-      + '<div class="sd"><b>' + last + '</b> issues '
-      + '<span style="color:' + toneVar(tone) + '">' + arrow + ' ' + (delta === 0 ? 'flat' : Math.abs(delta)) + '</span>'
-      + '<br><span class="muted">over ' + pts.length + ' days</span></div>'
-      + '</div>';
+    var x = function (i) { return n < 2 ? w / 2 : pad + (i / (n - 1)) * (w - pad * 2); };
+    var y = function (v) { return flat ? h / 2 : h - pad - ((v - min) / span) * (h - pad * 2); };
+
+    /* Fleet series only. A step caused by a property leaving the dashboard is
+       a clerical event, and an unexplained step in a fleet total is exactly
+       how a clerical event gets misread as a fleet event. */
+    var marks = '';
+    if (opts.annotate) {
+      (TR.annotations || []).forEach(function (a) {
+        var idx = -1;
+        for (var k = 0; k < n; k++) { if (HIST[k].date === a.date) { idx = k; break; } }
+        if (idx < 0) return; // annotated day is outside the window - nothing to mark
+        var ax = x(idx).toFixed(1);
+        marks += '<line x1="' + ax + '" y1="0" x2="' + ax + '" y2="' + h + '"'
+          + ' stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="2 2" opacity=".8"/>';
+      });
+    }
+
+    var body = series.map(function (s) {
+      var stroke = toneVar(s.tone), paths = [], dots = [], run = [], prev = null;
+      var flush = function () {
+        if (run.length === 1) dots.push(run[0]);
+        else if (run.length > 1) {
+          paths.push(run.map(function (p, k) {
+            return (k ? 'L' : 'M') + x(p.i).toFixed(1) + ' ' + y(p.v).toFixed(1);
+          }).join(' '));
+        }
+        run = [];
+      };
+      pointsOf(s.vals).forEach(function (p) {
+        if (prev !== null && p.i !== prev + 1) flush(); // non-consecutive: break the line
+        run.push(p);
+        prev = p.i;
+      });
+      flush();
+      return paths.map(function (d) {
+        return '<path d="' + d + '" fill="none" stroke="' + stroke + '" stroke-width="' + (opts.sw || 1.4)
+          + '" stroke-linejoin="round" stroke-linecap="round"/>';
+      }).join('') + dots.map(function (p) {
+        return '<circle cx="' + x(p.i).toFixed(1) + '" cy="' + y(p.v).toFixed(1) + '" r="1.8" fill="' + stroke + '"/>';
+      }).join('');
+    }).join('');
+
+    return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 ' + w + ' ' + h + '"'
+      + ' aria-hidden="true">' + marks + body + '</svg>';
+  }
+
+  /* Below two points there is no honest line to draw: one point has no
+     direction and none at all is nothing. Give the current value in words and
+     name the day tracking started, so a young series reads as young rather
+     than as broken or as zero. */
+  function sparseText(vals, unit) {
+    var pts = pointsOf(vals);
+    if (!pts.length) return '<div class="collecting">Not recorded yet.</div>';
+    var n = pts[pts.length - 1].v;
+    // {s} is the plural marker, so a lone device does not read "1 devices".
+    var words = esc(unit).replace(/\{s\}/g, n === 1 ? '' : 's');
+    return '<div class="collecting"><span class="sv">' + n + '</span> ' + words
+      + ' &middot; tracking since ' + fmtDay(HIST[pts[0].i].date) + '</div>';
+  }
+
+  /* A labelled line with its last value as plain text beside it - no hover
+     required - or the sparse form when there is not yet a line to draw. The
+     first series leads: it decides whether a line is warranted. */
+  function trendRow(series, unit, opts) {
+    var lead = series[0];
+    var leadPts = pointsOf(lead.vals);
+    if (leadPts.length < 2) return sparseText(lead.vals, unit);
+
+    var keys = series.map(function (s) {
+      var lv = lastOf(s.vals);
+      return '<span class="sk"><i style="background:' + toneVar(s.tone) + '"></i><b>'
+        + (lv === null ? '—' : lv) + '</b> ' + esc(s.label) + '</span>';
+    }).join('');
+
+    return '<div class="spark">' + trendSvg(series, opts)
+      + '<div class="sd">' + keys
+      + '<span class="muted sdays">over ' + leadPts.length + ' days</span></div></div>';
   }
 
   document.getElementById('cards').innerHTML = DATA.properties.map(function (p) {
@@ -801,6 +953,33 @@
       { label: 'Issue', n: c.issue, tone: 'bad' }
     ];
     if (c.other > 0) mix.push({ label: 'Unknown', n: c.other, tone: 'flat' });
+
+    /* Three thin lines on one shared scale. A shared domain is what keeps a
+       flat Ok, Check and Issue at three distinct heights instead of stacking
+       them on a single centred track - and today all three are flat, because
+       status still comes from the py_export sheets and they have not been
+       re-exported. */
+    var statusTrend = trendRow([
+      { label: 'issue', tone: 'bad', vals: propSeries(p.code, 'issue') },
+      { label: 'ok', tone: 'good', vals: propSeries(p.code, 'ok') },
+      { label: 'check', tone: 'warn', vals: propSeries(p.code, 'check') }
+    ], 'issue row{s}', { h: 38 });
+
+    var liveTrend = trendRow(
+      [{ label: 'heard from < 2d', tone: 'good', vals: propSeries(p.code, 'liveUnder2d') }],
+      'device{s} heard from in the last 2 days'
+    );
+
+    /* The registry-backfill progress meter. Shown only where the series has
+       ever been nonzero: a property with nothing awaiting mapping does not
+       need a permanent flat zero on its card. At 6178 this is the line that
+       matters - it should fall toward 0 as installs get mapped to rooms. */
+    var unmappedVals = propSeries(p.code, 'unmappedLive');
+    var showUnmapped = everNonZero(unmappedVals);
+    var unmappedTrend = showUnmapped
+      ? trendRow([{ label: 'awaiting room mapping', tone: 'warn', vals: unmappedVals }],
+                 'live device{s} awaiting room mapping')
+      : '';
 
     var hbParts = hbBuckets.map(function (b) {
       return { label: b.label, n: p.heartbeatHistogram[b.key] || 0, tone: b.tone };
@@ -841,7 +1020,11 @@
         + '<div class="kpi"><div class="v" style="color:' + toneVar(c.silent ? 'bad' : 'flat') + '">' + c.silent + '</div><div class="l">Silent</div></div>'
       + '</div>'
       + '<div class="metric"><div class="mh">Status mix</div>' + stack(mix, c.rooms) + legend(mix) + '</div>'
-      + '<div class="metric"><div class="mh">Issue trend</div>' + sparkline(p.code) + '</div>'
+      + '<div class="metric"><div class="mh">Status trend</div>' + statusTrend + '</div>'
+      + '<div class="metric"><div class="mh">Devices heard from</div>' + liveTrend + '</div>'
+      + (showUnmapped
+          ? '<div class="metric"><div class="mh">Awaiting room mapping</div>' + unmappedTrend + '</div>'
+          : '')
       + '<div class="metric"><div class="mh">Heartbeat age</div>' + bars(hbParts, hbMax) + '</div>'
       + '<div class="metric"><div class="mh">Battery' + (TH.batteryVoltage.confirmed
           ? ' <span class="muted">(ok ≥' + TH.batteryVoltage.okAbove + 'V, warn ≥' + TH.batteryVoltage.warnAbove + 'V)</span>'
@@ -856,6 +1039,75 @@
       + '<div class="cardnote">' + notes.join('<br>') + '</div>'
       + '</div>';
   }).join('');
+
+  // --------------------------------------------------------- fleet trends
+  /* The two totals that only mean anything fleet-wide.
+
+     The triage line carries a real step on 2026-08-20 - 236 rows down to 155 -
+     because 9829 was removed from the dashboard that day, not because 81 rooms
+     were fixed. History files are a record and are never rewritten, so the
+     step is real and stays; it gets a marker and a label rather than being
+     smoothed, truncated or quietly rebased. */
+  (function renderFleetTrends() {
+    var el = document.getElementById('fleetStrip');
+    if (!el) return;
+    if (!HIST.length) {
+      el.innerHTML = '<div class="fleet-hd">Fleet trends</div>'
+        + '<div class="collecting">No daily records yet &mdash; trends begin once the daily refresh has run.</div>';
+      return;
+    }
+
+    var triage = seriesOf(function (h) { return h.triageRows; });
+    var unmapped = seriesOf(function (h) { return h.unmappedLive; });
+
+    // Only annotations that actually land inside the window are worth naming.
+    var notes = (TR.annotations || []).filter(function (a) {
+      return HIST.some(function (h) { return h.date === a.date; });
+    }).map(function (a) {
+      return '<span class="anno"><i></i>' + fmtDay(a.date) + ' &middot; ' + esc(a.label) + '</span>';
+    }).join('');
+
+    /* The fleet figure is not the sum of the property cards, and looks like a
+       contradiction unless it says why: devices carrying no property group tag
+       at all cannot be attributed to a property, so they appear here only. */
+    var fleetLast = lastOf(unmapped);
+    var byProperty = DATA.properties.reduce(function (sum, pp) {
+      return sum + (lastOf(propSeries(pp.code, 'unmappedLive')) || 0);
+    }, 0);
+    var ungrouped = fleetLast === null ? 0 : fleetLast - byProperty;
+    var fleetNote = ungrouped > 0
+      ? '<div class="muted fleetnote">' + fleetLast + ' fleet-wide against ' + byProperty
+        + ' across the property cards. The other ' + ungrouped + ' carry no property group tag at all, '
+        + 'so they cannot be attributed to a property.</div>'
+      : '';
+
+    // Name the day the live series started from the data, not from a constant.
+    var liveStart = (function () {
+      var pts = pointsOf(seriesOf(function (h) { return h.liveUnder2d; }));
+      return pts.length ? HIST[pts[0].i].date : null;
+    })();
+
+    el.innerHTML = '<div class="fleet-hd">Fleet trends</div>'
+      + '<div class="fleet-grid">'
+        + '<div class="metric"><div class="mh">Triage rows</div>'
+          + trendRow([{ label: 'triage rows', tone: 'bad', vals: triage }], 'triage row{s}',
+                     { w: 260, h: 44, annotate: true })
+          + (notes ? '<div class="annos">' + notes + '</div>' : '')
+        + '</div>'
+        + '<div class="metric"><div class="mh">Live, awaiting room mapping</div>'
+          + trendRow([{ label: 'awaiting room mapping', tone: 'warn', vals: unmapped }],
+                     'live device{s} awaiting room mapping', { w: 260, h: 44 })
+          + fleetNote
+        + '</div>'
+      + '</div>'
+      + '<div class="trendcap">Trends cover the last ' + TR.windowDays + ' days of daily records'
+        + (liveStart
+            ? '. Live-series tracking &mdash; devices heard from, and devices awaiting room mapping &mdash; '
+              + 'began ' + fmtDay(liveStart) + ' ' + liveStart.split('-')[0] + '; '
+              + 'earlier records predate those fields and are drawn as a gap, never as a zero.'
+            : '.')
+      + '</div>';
+  })();
 
   // -------------------------------------------------------- reconciliation
   document.getElementById('reconNotes').innerHTML = R.notes.map(function (n) {
