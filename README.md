@@ -210,21 +210,87 @@ where `$NETLIFY_BUILD_HOOK` is the build-hook URL from
 
 `snapshot.js` writes one small JSON file per day into `history/` — counts
 only, roughly 800 bytes, no room detail. The daily workflow commits it, and
-the next build turns the series into the Issue-trend sparkline on each rollup
-card. Two days are needed before a line appears; until then the card says it
-is still collecting.
+the next build turns the series into sparklines.
 
 A same-day re-run overwrites that day's file rather than appending, so forcing
 extra refreshes never distorts the trend.
 
-History files dated before 2026-08-19 still contain a block for property 9829,
-which was removed from the dashboard that day. They are left exactly as
-recorded. `render.js` drops blocks for properties no longer in `config.js`
-before embedding the series, so a removed property leaves no trace on the page
-and the surviving properties keep their full, unbroken trend lines. Note that
-the rollup sparklines are per-property, so removing 9829 produces no step in
-any line on the page; what changes is fleet-wide totals quoted elsewhere
-(303 rooms rather than 421, 155 triage rows rather than 236).
+### What is plotted
+
+On each **property card**:
+
+| Trend | Form |
+| --- | --- |
+| **Status trend** | Ok / Check / Issue as three thin lines on one shared scale |
+| **Devices heard from** | `liveUnder2d` — devices seen in the last two days |
+| **Awaiting room mapping** | `unmappedLive` — shown only where the series has ever been nonzero |
+
+A shared scale is what keeps three flat lines at three distinct heights
+instead of collapsing them onto one track. It also means two genuinely close
+values sit close together — at 6178, Ok (13) and Check (11) nearly overlap.
+That is the honest reading, and the key beside the chart carries the exact
+numbers.
+
+**Awaiting room mapping** is the registry-backfill progress meter. At 6178 it
+is the point of the feature: it should fall toward zero as installs get mapped
+to rooms. There is deliberately no floor on "ever nonzero" — when the count
+reaches 3, then 1, those are the last rooms, not noise.
+
+On the **fleet strip** at the top of the rollup: total triage rows, and
+fleet-wide `unmappedLive`. The fleet figure is not the sum of the property
+cards and says so on the page — devices carrying no property group tag at all
+cannot be attributed to a property, so they appear only in the fleet number
+(on 2026-08-20: 184 fleet-wide against 53 across the cards, the other 131
+untagged).
+
+### The gap rule
+
+**A field absent from a record renders as a gap, never a zero.** Lines break
+at gaps and resume; nothing is interpolated across them, and an isolated point
+is drawn as a dot so a single recorded day is never silently dropped.
+
+This matters because `liveUnder2d` and `unmappedLive` only begin on
+2026-08-20. Records written before that day carry no value for them. Coercing
+that absence to `0` would draw every one of those series falling off a cliff
+on a day when nothing happened in the field at all — only a schema change.
+`null` and non-numeric values are treated the same way: absent, not zero.
+
+A series with fewer than two points shows its current value plus "tracking
+since &lt;date&gt;" as text rather than a degenerate one-point line.
+
+### Editing trends
+
+Both knobs live in the `TRENDS` block in `config.js`:
+
+```js
+const TRENDS = {
+  windowDays: 30,
+  annotations: [{ date: '2026-08-20', label: '9829 removed' }],
+};
+```
+
+- **`windowDays`** — how many trailing days the sparklines cover. `render.js`
+  ships exactly this many records to the page, so raising it makes the payload
+  bigger. Nothing is lost either way: `history/` keeps every record ever
+  written.
+- **`annotations`** — vertical dashed markers on the **fleet** series only.
+  Add an entry whenever a property is added to or removed from `PROPERTIES`.
+  Per-property series never need one, since a property's own counts are
+  unaffected by another property leaving.
+
+### 9829 and the step on the fleet line
+
+History files dated before 2026-08-20 still contain a block for property 9829,
+which was removed from the dashboard. They are left exactly as recorded.
+`render.js` drops blocks for properties no longer in `config.js` before
+embedding the series, so a removed property leaves no trace on the cards and
+the surviving properties keep their full, unbroken per-property lines.
+
+Fleet-level fields are left exactly as recorded, so the **fleet** triage line
+does carry a real step on 2026-08-20 — 236 rows down to 155. That is 9829
+leaving the dashboard, not 81 rooms getting fixed. The series is left whole
+and the step is marked and labelled rather than smoothed, truncated or
+rebased, which is exactly what the `annotations` entry above is for.
 
 To rebuild history locally without committing anything:
 

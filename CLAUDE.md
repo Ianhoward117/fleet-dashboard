@@ -32,6 +32,13 @@ state, decisions already made, and the environment traps.
   Netlify changes have to be made by Ian; guide, do not attempt to drive.
 - **The daily bot commits to `main`.** Always `git pull --rebase` before
   pushing or the push is rejected.
+- **History dates are date-only (`YYYY-MM-DD`) and need the date-only
+  formatter.** `new Date('2026-08-20')` parses as UTC midnight, which
+  `toLocaleDateString` then renders as **Aug 19** anywhere west of Greenwich,
+  Austin included. Format history dates with `fmtDay()` in `template.html`,
+  which builds the date in local terms — never with `fmtDateShort()`, which is
+  correct only for the full ISO datetimes it is already used on
+  (`batteryTimestamp`). This is a silent off-by-one-day, not an error.
 - **The build needs `PARTICLE_TOKEN` as of v2.** Locally it lives in
   `.env.local` (gitignored) and you must run node with
   `--env-file=.env.local`; a bare `node build.js` fails immediately by
@@ -112,16 +119,60 @@ Everything else is vanilla Node and vanilla browser JS.
   watchdog instead. Escalation options are in the README.
 - **Site is public-but-unlisted** by choice: no login, protection is the
   unguessable hostname plus `noindex`. Cloudflare Access bolts on later.
+- **v1.5 shipped 2026-08-20: trend lines from the committed `history/`
+  snapshots.** Render-side only — `fetch.js` and `normalize.js` were not
+  touched, no new endpoint, no new dependency, page still makes zero external
+  requests. Per-property cards carry a three-line status trend
+  (Ok/Check/Issue on one **shared** scale), `liveUnder2d`, and `unmappedLive`
+  where that series has ever been nonzero. A fleet strip on the rollup carries
+  total triage rows and fleet-wide `unmappedLive`.
+- **THE GAP RULE, and it is not negotiable: a field absent from a history
+  record renders as a GAP, never a zero.** Lines break and resume, nothing is
+  interpolated, an isolated point draws as a dot. `liveUnder2d` and
+  `unmappedLive` only start on 2026-08-20, so a fabricated 0 would draw every
+  one of those series falling off a cliff on a day when nothing happened in
+  the field — only a schema change. `null` and non-numeric are absent too.
+  Series with < 2 points show their value plus "tracking since <date>" text
+  rather than a degenerate line.
+- **Fleet-series annotations live in `config.js`, not in the template.** The
+  `TRENDS` block holds `windowDays` (trailing window; `render.js` ships
+  exactly that many records) and `annotations`. Add an annotation whenever a
+  property joins or leaves `PROPERTIES` — without one, the fleet line shows an
+  unexplained step and the next person reads a clerical change as a fleet
+  event. The 2026-08-20 `9829 removed` entry exists for exactly that: the
+  fleet triage line really does step 236 → 155 that day, and the step is
+  marked and labelled rather than smoothed or rebased.
+- **No floor on "ever nonzero"** for the awaiting-room-mapping line (Ian,
+  2026-08-20). The line's job is the backfill endgame: when 6178 falls to 3,
+  then 1, those are the last rooms, not noise. 6197's single-device line is a
+  real device awaiting mapping and stays.
+- **6178's near-overlapping Ok/Check lines are the honest reading** (Ian,
+  2026-08-20). Ok 13 and Check 11 genuinely are two apart on an 11–69 domain.
+  The shared scale stays; the key beside the chart carries the numbers.
+  Per-series scaling was considered and rejected.
+- **Workflow actions are pinned to current majors.** `actions/checkout@v7` and
+  `actions/setup-node@v7` as of 2026-08-20, both on the node24 runtime; v4 ran
+  on deprecated node20. Check each action's own releases before bumping rather
+  than assuming a version from memory.
 
-## Current state (2026-08-19)
+## Current state (2026-08-20)
 
 - All three properties render; counts tie exactly to the source sheets:
   303 rooms, 148 Ok / 121 Issue / 34 Check, 155 needing attention.
   (Was 421 / 185 / 197 / 39 / 236 before 9829 was removed.)
-- Daily refresh has run unattended and green on 16-19 Aug.
-- 4 days of history captured. Issue-count trends are flat (29/69/23) because
-  the `py_export_*` sheets have not been re-exported — status still comes
-  from those sheets.
+- Daily refresh has run unattended and green on 16-20 Aug.
+- **5 days of history captured; v1.5 trend lines ship as of 2026-08-20.**
+  Status trends are flat (29/69/23) because the `py_export_*` sheets have not
+  been re-exported — status still comes from those sheets.
+- **The live series have one point so far**, so `liveUnder2d` and
+  `unmappedLive` render today in their "tracking since Aug 20" text form on
+  every card and on the fleet strip. They become lines on the second snapshot.
+  This is the documented < 2-point behaviour, not a fault. The line path was
+  proved before shipping with synthetic records held in memory — `history/`
+  files are records and are never written to for a test.
+- Fleet `unmappedLive` is 184 against 53 across the property cards; the other
+  131 carry no property group tag at all and so cannot be attributed to a
+  property. The fleet strip states this on the page, computed at render time.
 - **Heartbeats are live as of v2**; the join is exact (229/229 device ids
   matched, zero unknown to Particle) against a fleet of 879 devices.
 - Battery-data age as of 19 Aug (this is what the badges now show):
@@ -164,6 +215,13 @@ Everything else is vanilla Node and vanilla browser JS.
 - ~~Thresholds are due a review with Priya.~~ **CLOSED** — reviewed and
   confirmed by Priya; battery cutoffs and heartbeat buckets stand as
   configured. Do not re-litigate.
+- **Housekeeping, known and deliberate:** the phone media query in
+  `template.html` (~line 266) contains a duplicated `.livetag` and
+  `.cardnote .await` block, copy-pasted from the desktop rules with the same
+  declarations and wrong indentation. It is inert — identical values, so it
+  changes nothing. Remove it in a future cleanup pass, **never mid-feature**:
+  an unrelated CSS change buried in a feature diff is how a rendering
+  regression gets attributed to the wrong commit.
 - Consider access control before the mid-September ESA/David meeting if
   room-level detail will be on screen for external eyes.
 - Open questions for Priya on the battery collector remain in
