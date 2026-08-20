@@ -1,6 +1,6 @@
 {
   "date": "2026-08-20",
-  "builtAt": "2026-08-20T11:29:46.294Z",
+  "builtAt": "2026-08-20T17:09:50.490Z",
   "triageRows": 155,
   "properties": {
     "6178": {
@@ -17,7 +17,9 @@
         "critical": 4,
         "unclassified": 0,
         "unknown": 64
-      }
+      },
+      "liveUnder2d": 6,
+      "unmappedLive": 52
     },
     "6197": {
       "rooms": 94,
@@ -33,15 +35,17 @@
         "critical": 11,
         "unclassified": 0,
         "unknown": 14
-      }
+      },
+      "liveUnder2d": 60,
+      "unmappedLive": 1
     },
     "9502": {
       "rooms": 116,
       "ok": 78,
       "issue": 23,
       "check": 15,
-      "reporting": 107,
-      "silent": 9,
+      "reporting": 113,
+      "silent": 3,
       "snapshot": "2026-07-14",
       "battery": {
         "ok": 86,
@@ -49,7 +53,11 @@
         "critical": 11,
         "unclassified": 0,
         "unknown": 10
-      }
+      },
+      "liveUnder2d": 66,
+      "unmappedLive": 0
     }
-  }
+  },
+  "liveUnder2d": 132,
+  "unmappedLive": 184
 }
