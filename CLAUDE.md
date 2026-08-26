@@ -191,8 +191,13 @@ Everything else is vanilla Node and vanilla browser JS.
 - **Only 63 of the override's 82 pairs land**, because 19 name rooms the 6178
   triage sheet does not carry. See "6178 floor 4" under Open items before
   reading that as a shortfall in the code.
-- History still stops at **2026-08-20** — no snapshots for 21-25 Aug. The daily
-  workflow has not produced a record in six days and wants checking.
+- **11 days of history** (16-26 Aug); the daily workflow has run green
+  throughout. `history/2026-08-26.json` was written by the cron *before* this
+  shipped, so it still carries the pre-override numbers and the trend step
+  falls on the 27th — which is why the TRENDS annotation is dated 2026-08-27.
+- A stale local checkout makes `git diff origin/main` look like it deletes
+  history files. It does not: they are commits you have not pulled. **Always
+  `git pull --rebase` first** — this is exactly the trap that rule guards.
 
 ## Previous state (2026-08-20)
 

@@ -241,10 +241,18 @@ const TRENDS = {
     { date: '2026-08-20', label: '9829 removed' },
     // 6178's room map moved from the registry/export to the committed override
     // in data/room-overrides.json. 32 more rooms at 6178 gained a device in one
-    // step, so the fleet's awaiting-room-mapping line drops sharply on this
-    // date. Nothing happened in the field: the same devices were already live
-    // and already counted, they simply became attributable to a room.
-    { date: '2026-08-26', label: '6178 room map overridden' },
+    // step, so the fleet's awaiting-room-mapping line drops sharply. Nothing
+    // happened in the field: the same devices were already live and already
+    // counted, they simply became attributable to a room.
+    //
+    // Dated the 27th, not the 26th, though the change shipped on the 26th. An
+    // annotation marks the first record that CARRIES the new value - the same
+    // convention as "9829 removed" above, which sits on 2026-08-20 for a
+    // removal made on the 19th. The daily workflow had already written
+    // history/2026-08-26.json before this shipped, so that record holds the old
+    // numbers and the step falls on the 27th. Until that record exists the
+    // annotation simply does not render.
+    { date: '2026-08-27', label: '6178 room map overridden' },
   ],
 };
 
