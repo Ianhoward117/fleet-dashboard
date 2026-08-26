@@ -25,7 +25,13 @@
 const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
-const { PROPERTIES, THRESHOLDS, EXCLUDED_REGISTRY_TABS } = require('./config');
+const { PROPERTIES, THRESHOLDS, EXCLUDED_REGISTRY_TABS, PARTICLE } = require('./config');
+const PARTICLE_PRODUCT_ID = PARTICLE.productId;
+// The override is a committed source file, not fetched data, so it is read
+// through fetch.js's validator rather than from data/raw/. That way
+// `node normalize.js` reflects an edit to it immediately, without spending
+// 13 network requests on a re-fetch just to see the effect.
+const { loadRoomOverrides } = require('./fetch');
 
 const RAW_DIR = path.join(__dirname, 'data', 'raw');
 const PARTICLE_FILE = path.join(RAW_DIR, 'particle-devices.json');
@@ -220,8 +226,26 @@ function readParticleDevices() {
     );
   }
   const byId = new Map();
-  for (const d of raw.devices) if (d && d.id) byId.set(d.id, d);
-  return { byId, pulledAt: raw.pulledAt || null, count: raw.devices.length, devices: raw.devices };
+  // Device NAME index, for the room-assignment override - that file keys on
+  // the name a person reads off a unit in a corridor, not on a 24-hex id.
+  // Names are not guaranteed unique by Particle, so every device is kept and
+  // ambiguity is only an error if an override actually asks for that name.
+  const byName = new Map();
+  for (const d of raw.devices) {
+    if (!d || !d.id) continue;
+    byId.set(d.id, d);
+    const nameKey = d.name === null || d.name === undefined ? '' : String(d.name).trim().toLowerCase();
+    if (!nameKey) continue;
+    if (!byName.has(nameKey)) byName.set(nameKey, []);
+    byName.get(nameKey).push(d);
+  }
+  return {
+    byId,
+    byName,
+    pulledAt: raw.pulledAt || null,
+    count: raw.devices.length,
+    devices: raw.devices,
+  };
 }
 
 /** First esa_#### / esa-#### group on a device, as a bare property code. */
@@ -437,6 +461,110 @@ function readRegistry(wb, tabName) {
 }
 
 // ---------------------------------------------------------------------------
+// Room-assignment overrides
+// ---------------------------------------------------------------------------
+
+class RoomOverrideApplyError extends Error {}
+
+/**
+ * Turn one validated override block into a room-key -> device map.
+ *
+ * The override names devices; the pipeline joins on device id. Resolution
+ * happens here, against the product device list already fetched, so no extra
+ * request is made and there is no second opinion about which devices exist.
+ *
+ * Room keys are produced by the same normRoom() the roster uses, so a key can
+ * only fail to match the roster because the room genuinely is not on it - not
+ * because one side wrote "102" and the other 102.0. Rooms are never coerced
+ * to numbers: "A322" is a real room at 6178.
+ *
+ * Everything here throws rather than skipping the offending row. Half an
+ * override applied is the worst outcome available: the page reads as
+ * corrected while some rooms still show the mapping the file exists to
+ * replace.
+ */
+function resolveRoomOverride(prop, block, particle) {
+  const where = 'room override for ' + prop.code;
+  const liveCodes = new Set(PROPERTIES.map((p) => p.code));
+  const byRoom = new Map();
+
+  for (const entry of block.rooms) {
+    const room = normRoom(entry.room);
+    if (!room) {
+      throw new RoomOverrideApplyError(
+        'NORMALIZE FAILED: ' + where + ' has an unusable room key ' + JSON.stringify(entry.room) + '.'
+      );
+    }
+
+    // Two distinct spellings that normalise onto one roster key ("102" and
+    // "102.0") would otherwise let the later one silently win.
+    const clash = byRoom.get(room.key);
+    if (clash) {
+      throw new RoomOverrideApplyError(
+        'NORMALIZE FAILED: ' + where + ' has two entries for room ' + JSON.stringify(room.display) +
+          ' (' + JSON.stringify(clash.sourceRoom) + ' and ' + JSON.stringify(entry.room) + ') once room ' +
+          'numbers are normalised.\n  One room, one device. Refusing to guess which line is current.'
+      );
+    }
+
+    const matches = particle.byName.get(entry.deviceName.trim().toLowerCase()) || [];
+    if (!matches.length) {
+      throw new RoomOverrideApplyError(
+        'NORMALIZE FAILED: ' + where + ' names device ' + JSON.stringify(entry.deviceName) +
+          ' for room ' + JSON.stringify(room.display) + ', which matches no device in product ' +
+          PARTICLE_PRODUCT_ID + '.\n' +
+          '  The product device list is the full inventory, so an unmatched name is a\n' +
+          '  typo or a device that was never claimed into the product. Either way the\n' +
+          '  room cannot be mapped, and guessing is not an option.'
+      );
+    }
+    if (matches.length > 1) {
+      throw new RoomOverrideApplyError(
+        'NORMALIZE FAILED: ' + where + ' names device ' + JSON.stringify(entry.deviceName) +
+          ' for room ' + JSON.stringify(room.display) + ', but ' + matches.length + ' devices in the ' +
+          'product carry that name.\n  ids: ' + matches.map((d) => d.id).join(', ') +
+          '\n  Refusing to guess which physical unit is in the room.'
+      );
+    }
+
+    const device = matches[0];
+
+    // A device tagged to a DIFFERENT live property is a real contradiction:
+    // the override says it is here, the cloud says it is somewhere else we
+    // also render. No group tag at all is ordinary and is not an error - the
+    // tag is fleet housekeeping and plenty of units have never been given one.
+    const groups = (device.groups || []).map(String);
+    const foreign = groups
+      .map((g) => {
+        const m = /^esa[-_](\d{4})/i.exec(g);
+        return m ? { code: m[1], group: g } : null;
+      })
+      .filter((g) => g && liveCodes.has(g.code) && g.code !== prop.code);
+    if (foreign.length) {
+      throw new RoomOverrideApplyError(
+        'NORMALIZE FAILED: ' + where + ' assigns device ' + JSON.stringify(entry.deviceName) +
+          ' to room ' + JSON.stringify(room.display) + ', but that device carries the group tag ' +
+          foreign.map((g) => JSON.stringify(g.group)).join(', ') + ', which belongs to another live ' +
+          'property.\n' +
+          '  groups on the device: ' + (groups.length ? groups.join(', ') : '(none)') + '\n' +
+          '  Two properties cannot both hold one unit. Resolve it in the field or in\n' +
+          '  Particle before the override claims it.'
+      );
+    }
+
+    byRoom.set(room.key, {
+      sourceRoom: entry.room,
+      room,
+      deviceName: device.name || entry.deviceName,
+      deviceId: device.id,
+      groups,
+    });
+  }
+
+  return byRoom;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -458,6 +586,10 @@ function normalize() {
   let joinAttempted = 0;
   let joinMatched = 0;
 
+  // Committed room-assignment overrides. Validated at load; resolved against
+  // the Particle device list per property below.
+  const roomOverrides = loadRoomOverrides();
+
   const properties = [];
   const triage = [];
   const ghosts = [];
@@ -467,12 +599,29 @@ function normalize() {
   const duplicateRoomRows = [];
   const notes = [];
 
+  // Override bookkeeping. None of these fail the build - they are the diff a
+  // replace leaves behind, and the diff is the point: it is what the registry
+  // backfill still has to reconcile.
+  const roomOverrideSummaries = [];
+  const overrideRoomsNotInRoster = [];
+  const overrideRoomsWithoutDevice = [];
+  const overrideDiscardedAssignments = [];
+
   for (const prop of PROPERTIES) {
     const wb = readWorkbook(prop.sheetKey, WO_SHEETS);
     const rs = readRoomStatus(wb);
     const hb = readHeartbeatExport(wb);
     const bat = readBatteryExport(wb);
     const reg = prop.registryTab ? readRegistry(registryWb, prop.registryTab) : null;
+
+    // Room assignments for this property may be taken from the committed
+    // override instead of the sheets. Resolution throws on anything it cannot
+    // account for, so by this line the map is either complete or the build is
+    // already over.
+    const ovBlock = roomOverrides.properties[prop.code] || null;
+    const ovReplace = ovBlock && ovBlock.mode === 'replace'
+      ? resolveRoomOverride(prop, ovBlock, particle)
+      : null;
 
     const currentTime = hb.currentTime;
     const snapshotAgeDays = currentTime ? (builtAt - currentTime) / DAY_MS : null;
@@ -483,9 +632,40 @@ function normalize() {
       const key = t.room.key;
       const tele = hb.byRoom.get(key) || null;
       const regRec = reg ? reg.byRoom.get(key) || null : null;
+      const ovRec = ovReplace ? ovReplace.get(key) || null : null;
 
-      const deviceId = (tele && tele.deviceId) || (regRec && regRec.deviceId) || null;
-      const deviceName = t.deviceName || (regRec && regRec.deviceName) || null;
+      // What the sheets alone would have said. Kept even under an override so
+      // the assignments a replace throws away can be listed rather than just
+      // vanishing - that list is the registry backfill's worklist.
+      const priorDeviceId = (tele && tele.deviceId) || (regRec && regRec.deviceId) || null;
+      const priorSource = tele && tele.deviceId ? 'export' : regRec && regRec.deviceId ? 'registry' : null;
+
+      // In replace mode the override IS the assignment layer for this
+      // property: the export's room->device map and the registry's are both
+      // discarded, not merely outranked. A room the override does not list
+      // therefore has no device - which is the honest reading, because the
+      // override is a field-verified map and its silence about a room is not
+      // evidence that a stale sheet had it right.
+      const deviceId = ovReplace ? (ovRec && ovRec.deviceId) || null : priorDeviceId;
+      const deviceName = ovReplace
+        ? (ovRec && ovRec.deviceName) || null
+        : t.deviceName || (regRec && regRec.deviceName) || null;
+
+      if (ovReplace && priorDeviceId && priorDeviceId !== deviceId) {
+        overrideDiscardedAssignments.push({
+          property: prop.code,
+          propertyName: prop.name,
+          room: t.room.display,
+          roomKey: key,
+          discardedFrom: priorSource,
+          discardedDeviceId: priorDeviceId,
+          discardedDeviceIdShort: String(priorDeviceId).slice(-6),
+          discardedDeviceName:
+            (regRec && regRec.deviceId === priorDeviceId ? regRec.deviceName : null) || t.deviceName || null,
+          overrideDeviceName: ovRec ? ovRec.deviceName : null,
+          overrideDeviceId: ovRec ? ovRec.deviceId : null,
+        });
+      }
 
       // Voltage: prefer the export keyed by device, then by room, then the
       // human-entered Room Status figure.
@@ -550,8 +730,14 @@ function normalize() {
         // every row is what makes the figure interpretable.
         lastChecked: iso(currentTime),
         notes: t.notes,
-        registered: Boolean(regRec),
-        installDate: regRec ? iso(regRec.installDate) : null,
+        registered: ovReplace ? Boolean(ovRec) : Boolean(regRec),
+        // The override carries no install dates, so under a replace this is
+        // absent rather than inherited from a mapping we just discarded.
+        installDate: ovReplace ? null : regRec ? iso(regRec.installDate) : null,
+        // Where this room's device assignment came from. Kept in
+        // normalized.json for analysis; the page reads provenance off the
+        // reconciliation block instead.
+        assignmentSource: deviceId ? (ovRec ? 'override' : priorSource) : null,
       });
     }
 
@@ -616,6 +802,68 @@ function normalize() {
       bucket: bucketByDays(batteryAgeMedian, THRESHOLDS.batteryAge),
       approximate: true, // collector runs intermittently; timestamps are not precise
     };
+
+    // --- override bookkeeping ---------------------------------------------
+    // A replace is allowed to leave two kinds of gap, and both are reported
+    // rather than papered over:
+    //
+    //   - the override names a room the sheet roster does not carry. No room
+    //     row is invented for it. The roster and the denominators stay
+    //     sheet-owned, so an override can never talk the property's Ok/Issue/
+    //     Check counts up or down; the device simply stays unmapped and shows
+    //     up in the live-but-unmapped list as before.
+    //
+    //   - the roster carries a room the override does not name. That room
+    //     loses its device and reads as never-reporting, which is the honest
+    //     consequence of a field-verified map not listing it.
+    if (ovReplace) {
+      const rosterKeys = new Set(rooms.map((r) => r.roomKey));
+
+      for (const [roomKey, rec] of ovReplace) {
+        if (rosterKeys.has(roomKey)) continue;
+        overrideRoomsNotInRoster.push({
+          property: prop.code,
+          propertyName: prop.name,
+          room: rec.room.display,
+          deviceName: rec.deviceName,
+          deviceId: rec.deviceId,
+          deviceIdShort: String(rec.deviceId).slice(-6),
+        });
+      }
+
+      const seenRoom = new Set();
+      for (const r of rooms) {
+        if (ovReplace.has(r.roomKey) || seenRoom.has(r.roomKey)) continue;
+        seenRoom.add(r.roomKey);
+        overrideRoomsWithoutDevice.push({
+          property: prop.code,
+          propertyName: prop.name,
+          room: r.room,
+          status: r.status,
+        });
+      }
+
+      const mappedRooms = [...ovReplace.keys()].filter((k) => rosterKeys.has(k)).length;
+      roomOverrideSummaries.push({
+        property: prop.code,
+        propertyName: prop.name,
+        mode: ovBlock.mode,
+        source: ovBlock.source,
+        capturedAt: ovBlock.capturedAt,
+        note: ovBlock.note,
+        // Pairs in the file.
+        pairs: ovBlock.rooms.length,
+        // Pairs that landed on a room this dashboard actually renders.
+        mappedRooms,
+        // Pairs whose room is not on the sheet roster, so no row exists to
+        // attach them to.
+        roomsNotInRoster: ovBlock.rooms.length - mappedRooms,
+        // Roster rooms the override does not name, now showing no device.
+        rosterRoomsWithoutDevice: overrideRoomsWithoutDevice.filter((x) => x.property === prop.code).length,
+        // Sheet-derived assignments this replace threw away.
+        discardedAssignments: overrideDiscardedAssignments.filter((x) => x.property === prop.code).length,
+      });
+    }
 
     // --- reconciliation ---------------------------------------------------
     const telemetryDeviceIds = new Set([...hb.byDevice.keys(), ...bat.byDevice.keys()]);
@@ -919,6 +1167,10 @@ function normalize() {
       unknownToParticle,
       liveButUnmapped,
       liveUnmappedNote,
+      roomOverrides: roomOverrideSummaries,
+      overrideRoomsNotInRoster,
+      overrideRoomsWithoutDevice,
+      overrideDiscardedAssignments,
       notes,
     },
   };
@@ -995,6 +1247,19 @@ function report(data) {
   console.log(`  excluded device ids     : ${q.excludedDeviceIds} across ${q.excludedTabs} tabs (listed above)`);
   console.log(`  excluded devices that were live+unmapped and filtered out: ${q.excludedLiveFiltered}`);
   console.log(`  kept despite tab membership (live property group tag)     : ${q.excludedLiveRecovered}`);
+
+  const ov = data.reconciliation.roomOverrides || [];
+  if (ov.length) {
+    console.log('\nNORMALIZE  room-assignment overrides applied');
+    for (const o of ov) {
+      console.log(`  ${o.property}  mode=${o.mode}  source: ${o.source || 'unstated'}  captured ${o.capturedAt || 'undated'}`);
+      console.log(`    pairs in the file                  : ${o.pairs}`);
+      console.log(`    mapped onto a room on the roster   : ${o.mappedRooms}`);
+      console.log(`    rooms NOT on the sheet roster      : ${o.roomsNotInRoster}  (no row invented; devices stay unmapped)`);
+      console.log(`    roster rooms now without a device  : ${o.rosterRoomsWithoutDevice}`);
+      console.log(`    sheet assignments discarded        : ${o.discardedAssignments}  (the registry backfill's worklist)`);
+    }
+  }
 
   const r = data.reconciliation;
   console.log('\nNORMALIZE  reconciliation summary');
