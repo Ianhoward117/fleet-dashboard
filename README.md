@@ -438,6 +438,92 @@ never mistaken for a current one.
 
 ---
 
+## Room-assignment overrides
+
+Some properties have a room-to-device map the registry workbook simply does
+not have right, and this pipeline is **strictly read-only** against the Google
+Sheets — the correction cannot be made at source from here. So it is made in
+the repository instead, in `data/room-overrides.json`.
+
+That file is a **committed source**, not a build artefact. `data/` is otherwise
+gitignored and rebuilt every deploy, so `.gitignore` uses `data/*` with a
+single negation for this one file. It has to stay committed: Netlify and the
+daily workflow have no other way to see it.
+
+### Shape
+
+```json
+{
+  "properties": {
+    "6178": {
+      "mode": "replace",
+      "source": "6178 room data.xlsx (Ian Howard)",
+      "capturedAt": "2026-08-26",
+      "note": "Field-verified install map …",
+      "rooms": { "101": "P2-0615", "A322": "P2-0744" }
+    }
+  }
+}
+```
+
+Keys are **Particle device names** (`P2-####`) — what a person reads off a unit
+in a corridor — not 24-character device ids. Names are resolved to ids against
+the product device list `fetch.js` already pulls, so an override costs **no
+extra network request**. The build still makes exactly 13.
+
+`mode: "replace"` is the only mode implemented. It means what it says: for that
+property, **every** sheet-derived room/device assignment is discarded — both
+the registry tab's and `py_export_heartbeatstatus`'s room→device map — and
+rebuilt from this file. A room the override does not name ends up with no
+device. In practice most of what a replace discards comes from the *export*,
+not the registry, so an override that only displaced the registry would barely
+change the page.
+
+### What an override can and cannot do
+
+It governs **room-to-device assignment only**. The room roster, the triage
+status (Ok / Issue / Check) and the battery voltages stay sheet-owned. An
+override therefore cannot invent a room, move a property's denominators, or
+talk a red room green. This is verified on every build: `render.js` asserts
+that the pairs in the file are fully accounted for.
+
+### It fails the build rather than half-applying
+
+A partly-applied override is the worst outcome available — the page reads as
+corrected while some rooms still show the mapping the file exists to replace.
+So these all stop the build:
+
+- invalid JSON, an unknown property code, or a mode that is not implemented;
+- a duplicate room key or duplicate device name inside one property block
+  (compared trimmed and case-insensitively);
+- two rooms that collapse onto the same key once normalised (`102` / `102.0`);
+- a device name matching **no** device in product 18173;
+- a device name matching **more than one** device in the product;
+- a device carrying **another live property's** `esa_` group tag.
+
+A device with *no* group tag at all is ordinary and is **not** an error — plenty
+of units have never been given one.
+
+Rooms are compared through the same normaliser the roster uses: trimmed,
+case-insensitive, and never coerced to numbers, so `A322` survives intact.
+
+### The gaps it leaves are reported, never hidden
+
+Three things are surfaced in Reconciliation instead of failing:
+
+| Reported as | Meaning |
+|---|---|
+| **Override rooms not on the sheet roster** | The override maps a room the triage sheet does not list. No room row is invented, so denominators cannot move. The device stays in live-but-unmapped. |
+| **Roster rooms the override does not map** | On the sheet, absent from the override, so now showing no device. |
+| **Assignments the override discarded** | What the sheets said was in the room beforehand. This is the diff — the worklist for correcting the registry at source. |
+
+The Reconciliation tab leads with a provenance banner naming the source file
+and its capture date, and saying plainly that the registry workbook has **not**
+been corrected at source. The backfill stays an open ask; the page must never
+imply otherwise.
+
+---
+
 ## v2: the Particle API (shipped)
 
 Heartbeats come from the Particle Cloud API. Battery, room mapping and triage

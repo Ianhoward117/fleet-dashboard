@@ -254,6 +254,22 @@
   .note .nt { color: var(--ink-soft); }
   .dup { font-size: 12.5px; color: var(--ink-soft); }
 
+  /* Provenance banner: says where a property's room map came from, and what
+     that does NOT mean. Leads the reconciliation tab because reading any
+     figure below it without this context would be misleading. */
+  .prov {
+    border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    background: var(--panel); border-radius: 7px;
+    padding: 11px 13px; margin-bottom: 14px; font-size: 13px;
+  }
+  .prov h2 { font-size: 13.5px; margin: 0 0 5px; }
+  .prov p { margin: 0 0 6px; color: var(--ink-soft); }
+  .prov p:last-child { margin-bottom: 0; }
+  .prov .src { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
+  .prov .open { font-weight: 600; color: var(--ink); }
+  .prov ul { margin: 6px 0 0; padding-left: 17px; color: var(--ink-soft); }
+  .prov li { margin-bottom: 2px; }
+
   footer { max-width: 1400px; margin: 0 auto; padding: 0 16px 30px; font-size: 11.5px; color: var(--ink-faint); }
   footer code { font-family: var(--mono); font-size: 11px; }
 
@@ -391,6 +407,7 @@
   </section>
 
   <section id="view-recon" role="tabpanel" hidden>
+    <div id="reconOverrides"></div>
     <div id="reconNotes" class="recon-block"></div>
     <div id="reconBlocks"></div>
   </section>
@@ -484,7 +501,10 @@
   var reconTotal = R.ghosts.length + R.unregisteredReporters.length + R.roomDeviceMismatches.length
                  + R.orphanTelemetryRooms.length + R.duplicateRoomRows.length
                  + (R.liveButUnmapped ? R.liveButUnmapped.length : 0)
-                 + (R.unknownToParticle ? R.unknownToParticle.length : 0);
+                 + (R.unknownToParticle ? R.unknownToParticle.length : 0)
+                 + (R.overrideRoomsNotInRoster ? R.overrideRoomsNotInRoster.length : 0)
+                 + (R.overrideRoomsWithoutDevice ? R.overrideRoomsWithoutDevice.length : 0)
+                 + (R.overrideDiscardedAssignments ? R.overrideDiscardedAssignments.length : 0);
   document.getElementById('nRecon').textContent = reconTotal;
 
   // Heartbeats are live for every property now, so the only thing that can go
@@ -1110,6 +1130,57 @@
   })();
 
   // -------------------------------------------------------- reconciliation
+
+  /* A capture date is a plain YYYY-MM-DD, so it gets the date-only treatment:
+     new Date('2026-08-26') is UTC midnight and formats as the 25th anywhere
+     west of Greenwich, Austin included. Built in local terms instead. */
+  function fmtYmd(ymd) {
+    if (!ymd) return 'an unstated date';
+    var p = String(ymd).split('-');
+    if (p.length !== 3) return String(ymd);
+    var d = new Date(+p[0], +p[1] - 1, +p[2]);
+    return isNaN(d) ? String(ymd)
+      : d.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  /* Provenance. Leads the tab: every figure below it for an overridden
+     property is read differently once you know the room map did not come
+     from the registry, and that the registry itself is still wrong. */
+  document.getElementById('reconOverrides').innerHTML = (R.roomOverrides || []).map(function (o) {
+    var plural = function (n, one, many) { return n + ' ' + (n === 1 ? one : many); };
+    var gaps = '';
+    if (o.roomsNotInRoster) {
+      gaps += '<li>' + plural(o.roomsNotInRoster, 'pair names a room', 'pairs name rooms')
+        + ' that the triage sheet does not list. No room row is invented for them, so the '
+        + 'property&rsquo;s room count and its Ok / Issue / Check totals are untouched; those devices '
+        + 'stay in the live-but-unmapped list below.</li>';
+    }
+    if (o.rosterRoomsWithoutDevice) {
+      gaps += '<li>' + plural(o.rosterRoomsWithoutDevice, 'room on the roster is', 'rooms on the roster are')
+        + ' not named by the override, and now show no device at all.</li>';
+    }
+    if (o.discardedAssignments) {
+      gaps += '<li>' + plural(o.discardedAssignments, 'sheet assignment was', 'sheet assignments were')
+        + ' discarded by the replace. That list is the backfill&rsquo;s worklist, not a fleet event.</li>';
+    }
+
+    return '<div class="prov">'
+      + '<h2>Room assignments for ' + esc(o.property) + ' ' + esc(o.propertyName)
+        + ' come from a committed override</h2>'
+      + '<p>All ' + o.pairs + ' room-to-device pairs for this property are read from a file kept in '
+        + 'this repository, and <b>' + o.mappedRooms + '</b> of them match a room on the sheet roster. '
+        + 'The registry workbook&rsquo;s mapping and the export&rsquo;s are both discarded for '
+        + esc(o.property) + '.<br><span class="src">source: ' + esc(o.source || 'unstated')
+        + ' &middot; captured ' + esc(fmtYmd(o.capturedAt)) + '</span></p>'
+      + '<p class="open">The registry workbook has not been corrected at source. This dashboard is '
+        + 'read-only against the sheets, so the registry and export backfill remains an open ask with '
+        + 'Priya &mdash; nothing here closes it.</p>'
+      + '<p>The override moves device assignment only. The room roster, the triage status and the '
+        + 'battery voltages stay sheet-owned.</p>'
+      + (gaps ? '<ul>' + gaps + '</ul>' : '')
+      + '</div>';
+  }).join('');
+
   document.getElementById('reconNotes').innerHTML = R.notes.map(function (n) {
     return '<div class="note"><span class="nb ' + (n.severity === 'warn' ? 'tone-warn' : 'tone-flat') + '">'
       + esc(n.property) + '</span><span class="nt">' + esc(n.text) + '</span></div>';
@@ -1159,6 +1230,52 @@
           + '<td class="mono" data-label="Group">' + esc(u.group || '—') + '</td>'
           + '<td class="num" data-label="Last heard" title="' + esc(fmtDateTime(u.lastHeard)) + '">'
             + fmtDays(u.ageDays) + '</td></tr>';
+      }));
+  }
+
+  // The three gaps a replace-mode override leaves behind. They sit next to
+  // live-but-unmapped because they are the same story told from the other
+  // side: paperwork that has not caught up with the field.
+  var ovNotInRoster = R.overrideRoomsNotInRoster || [];
+  if (ovNotInRoster.length) {
+    blocks += block('Override rooms not on the sheet roster', ovNotInRoster.length,
+      'The override maps these rooms, but the triage sheet does not list them, so there is no row to '
+      + 'attach them to. No room is invented here - the roster stays sheet-owned and the property '
+      + 'denominators do not move. These devices remain in the live-but-unmapped list above.',
+      table(['Prop', 'Room', 'Device', 'Short id'], ovNotInRoster, function (o) {
+        return '<tr>' + propCell(o)
+          + '<td class="num" data-label="Room"><b>' + esc(o.room) + '</b></td>'
+          + '<td class="mono" data-label="Device">' + esc(o.deviceName || '—') + '</td>'
+          + '<td class="mono muted" data-label="Short id">' + esc(o.deviceIdShort) + '</td></tr>';
+      }));
+  }
+
+  var ovNoDevice = R.overrideRoomsWithoutDevice || [];
+  if (ovNoDevice.length) {
+    blocks += block('Roster rooms the override does not map', ovNoDevice.length,
+      'On the triage sheet, but not named anywhere in the override, so they now show no device and '
+      + 'read as never-reporting. Either the room has no unit, or the override is missing it.',
+      table(['Prop', 'Room', 'Triage status'], ovNoDevice, function (o) {
+        return '<tr>' + propCell(o)
+          + '<td class="num" data-label="Room"><b>' + esc(o.room) + '</b></td>'
+          + '<td data-label="Triage status">' + esc(o.status) + '</td></tr>';
+      }));
+  }
+
+  var ovDiscarded = R.overrideDiscardedAssignments || [];
+  if (ovDiscarded.length) {
+    blocks += block('Assignments the override discarded', ovDiscarded.length,
+      'What the registry or the export said was in these rooms, before the override replaced it. '
+      + 'This is the diff between the sheets and the field-verified map - the worklist for correcting '
+      + 'the registry at source, which this dashboard cannot do.',
+      table(['Prop', 'Room', 'Sheets said', 'From', 'Override says'], ovDiscarded, function (o) {
+        return '<tr>' + propCell(o)
+          + '<td class="num" data-label="Room"><b>' + esc(o.room) + '</b></td>'
+          + '<td class="mono" data-label="Sheets said">'
+            + esc(o.discardedDeviceName || o.discardedDeviceIdShort) + '</td>'
+          + '<td class="muted" data-label="From">' + esc(o.discardedFrom || '—') + '</td>'
+          + '<td class="mono" data-label="Override says">'
+            + esc(o.overrideDeviceName || 'no device') + '</td></tr>';
       }));
   }
 

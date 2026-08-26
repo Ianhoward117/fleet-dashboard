@@ -39,6 +39,11 @@ state, decisions already made, and the environment traps.
   which builds the date in local terms — never with `fmtDateShort()`, which is
   correct only for the full ISO datetimes it is already used on
   (`batteryTimestamp`). This is a silent off-by-one-day, not an error.
+- **`data/` is gitignored except one file.** `.gitignore` uses `data/*` plus
+  `!data/room-overrides.json`, because git will not descend into an ignored
+  *directory* — `data/` alone makes the negation impossible. That one file is a
+  committed source, not a build artefact; if it stops being committed, Netlify
+  and the daily workflow build a different page than you do locally.
 - **The build needs `PARTICLE_TOKEN` as of v2.** Locally it lives in
   `.env.local` (gitignored) and you must run node with
   `--env-file=.env.local`; a bare `node build.js` fails immediately by
@@ -150,12 +155,46 @@ Everything else is vanilla Node and vanilla browser JS.
   2026-08-20). Ok 13 and Check 11 genuinely are two apart on an 11–69 domain.
   The shared scale stays; the key beside the chart carries the numbers.
   Per-series scaling was considered and rejected.
+- **v1.6 shipped 2026-08-26: per-property room-assignment overrides**, loaded
+  from the committed `data/room-overrides.json`, with 6178 as the first entry
+  (82 field-verified pairs, `mode: "replace"`). The file keys on Particle
+  device *name*; names resolve against the device list `fetch.js` already
+  pulls, so the build still makes exactly 13 requests. `replace` discards
+  **both** sheet-derived assignment sources for that property — the registry
+  tab's map *and* `py_export_heartbeatstatus`'s room→device map. That second
+  one is the important half: at 6178, 30 of the 30 discarded assignments came
+  from the export, so displacing only the registry would have changed almost
+  nothing.
+- **An override governs room-to-device ASSIGNMENT only.** Room roster, triage
+  status and battery stay sheet-owned, so it can never invent a room, move a
+  denominator, or talk a red room green. `render.js` asserts the pairs balance
+  on every build. Verified against identical raw data: Ok/Issue/Check, room
+  counts, the triage queue and every battery histogram are unchanged.
+- **An override fails the build rather than half-applying.** Unknown property,
+  unimplemented mode, duplicate room or device name, two rooms collapsing onto
+  one key, a name matching no device or more than one device in product 18173,
+  or a device carrying another live property's `esa_` tag. A device with **no**
+  group tag is ordinary and is not an error.
 - **Workflow actions are pinned to current majors.** `actions/checkout@v7` and
   `actions/setup-node@v7` as of 2026-08-20, both on the node24 runtime; v4 ran
   on deprecated node20. Check each action's own releases before bumping rather
   than assuming a version from memory.
 
-## Current state (2026-08-20)
+## Current state (2026-08-26)
+
+- **6178's room map now comes from the override.** 33 -> **65** of its 93 rows
+  carry a device; heartbeats went 4 fresh / 2 aging / 27 stale / 60 never ->
+  **45 / 10 / 10 / 28**. Live-but-unmapped at 6178 dropped **52 -> 5**, and
+  fleet-wide 176 -> 129. Ok/Issue/Check (13/69/11), the 303-row denominator,
+  the 155-row triage queue and every battery histogram are unchanged, at 6178
+  and at the other two properties.
+- **Only 63 of the override's 82 pairs land**, because 19 name rooms the 6178
+  triage sheet does not carry. See "6178 floor 4" under Open items before
+  reading that as a shortfall in the code.
+- History still stops at **2026-08-20** — no snapshots for 21-25 Aug. The daily
+  workflow has not produced a record in six days and wants checking.
+
+## Previous state (2026-08-20)
 
 - All three properties render; counts tie exactly to the source sheets:
   303 rooms, 148 Ok / 121 Issue / 34 Check, 155 needing attention.
@@ -179,6 +218,30 @@ Everything else is vanilla Node and vanilla browser JS.
   6197 ~12d median, 9502 ~37d, 6178 ~69d.
 
 ## Open items
+
+- **6178 floor 4: the override and the roster describe different rooms.** On
+  floors 1-3 the override overlaps the triage roster almost exactly (17/23/23
+  rooms in common). **On floor 4 the overlap is zero.** The roster carries 401,
+  402, 403, 407-411, 418, 422, 424, 432; the override carries 404, 405, 406,
+  412-417, 419-421, 423, 425, 426, 428, 429, 430. Two disjoint sets on one
+  floor is the signature of a numbering mismatch, not a backfill gap.
+
+  Two facts sharpen it. **15 of the 19 unmatched override devices last reported
+  ~133 days ago**, all within 0.3 days of each other — a whole-floor silence in
+  early April, not a scatter. The exceptions are 208, 426, 428 and A322, which
+  are live now. And **27 of the 30 assignments the replace discarded** were
+  already stale devices from the old low-numbered range (`P2-0008`-`P2-0231`),
+  against the override's `P2-0303`-`P2-0825`.
+
+  Read together: floor 4 looks like it holds two hardware generations and the
+  page can currently show neither. **Do not "fix" this by editing the override
+  to match the roster** — the question is which document describes the building,
+  and that is a field question. Until it is answered, those 19 devices stay
+  unmapped and are listed in Reconciliation.
+
+- **The 6178 registry/export backfill is still open with Priya.** The override
+  corrects the dashboard, not the source. `py_export_*` still gates battery,
+  rooms and triage status, and 6178's export snapshot is still 2026-06-24.
 
 - **6178: the data source got honest, and it cuts both ways.** Read these two
   facts together or you will draw the wrong conclusion.

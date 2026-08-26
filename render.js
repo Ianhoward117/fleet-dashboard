@@ -152,6 +152,18 @@ function assertSane(data) {
     if (blob.includes(banned)) problems.push(`out-of-scope site "${banned}" appears in the payload`);
   }
 
+  // A replace-mode override must account for every pair in its file: each one
+  // either lands on a roster room or is reported as not being on the roster.
+  // If those stop adding up, the page is quietly dropping assignments.
+  for (const o of (data.reconciliation && data.reconciliation.roomOverrides) || []) {
+    if (o.mappedRooms + o.roomsNotInRoster !== o.pairs) {
+      problems.push(
+        `${o.property}: room override accounts for ${o.mappedRooms} + ${o.roomsNotInRoster} pairs ` +
+          `but the file holds ${o.pairs} - some assignments went missing`
+      );
+    }
+  }
+
   // The annotation is only legitimate on a device whose current group ties it
   // to a live property. Anything else means the exclusion filter leaked.
   const liveCodes = new Set(data.properties.map((p) => p.code));
@@ -241,7 +253,9 @@ function render() {
     `RENDER  ${payload.properties.length} properties, ${rooms.length} rooms, ${triageCount} triage rows, ` +
       `${recon.ghosts.length + recon.unregisteredReporters.length + recon.roomDeviceMismatches.length +
         recon.orphanTelemetryRooms.length + recon.duplicateRoomRows.length +
-        recon.liveButUnmapped.length + recon.unknownToParticle.length} reconciliation items`
+        recon.liveButUnmapped.length + recon.unknownToParticle.length +
+        recon.overrideRoomsNotInRoster.length + recon.overrideRoomsWithoutDevice.length +
+        recon.overrideDiscardedAssignments.length} reconciliation items`
   );
   console.log(
     payload.history.length

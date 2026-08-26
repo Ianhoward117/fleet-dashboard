@@ -237,7 +237,15 @@ const THRESHOLDS = {
  */
 const TRENDS = {
   windowDays: 30,
-  annotations: [{ date: '2026-08-20', label: '9829 removed' }],
+  annotations: [
+    { date: '2026-08-20', label: '9829 removed' },
+    // 6178's room map moved from the registry/export to the committed override
+    // in data/room-overrides.json. 32 more rooms at 6178 gained a device in one
+    // step, so the fleet's awaiting-room-mapping line drops sharply on this
+    // date. Nothing happened in the field: the same devices were already live
+    // and already counted, they simply became attributable to a room.
+    { date: '2026-08-26', label: '6178 room map overridden' },
+  ],
 };
 
 module.exports = {
