@@ -564,6 +564,126 @@ function resolveRoomOverride(prop, block, particle) {
   return byRoom;
 }
 
+/**
+ * Work out what a "merge" override does to a property, before any row is built.
+ *
+ * Merge is the conservative mode: the override wins the rooms it names, and
+ * every other room keeps whatever the sheets resolve for it today. Use it where
+ * the sheet map is broadly working and only some rooms are wrong - which is the
+ * opposite of the case "replace" exists for.
+ *
+ * This has to be a whole-property pass rather than a per-room decision, because
+ * of rule (b): a device the override places in room X may currently be sitting
+ * in room Y of the same property, and it has to be taken out of Y. A per-room
+ * loop cannot see that. This is the failure mode replace could never produce -
+ * replace drops every prior assignment before it starts, so nothing can be left
+ * behind in a second room.
+ *
+ * The rules, in order:
+ *   a. an override room takes the override's device; whatever was there is
+ *      dropped and recorded;
+ *   b. if that device was assigned to another room of this property, that other
+ *      room is vacated and the move is recorded. No device occupies two rooms;
+ *   c. rooms the override does not name are left completely alone;
+ *   d. override rooms that are not on the sheet roster are recorded and
+ *      otherwise ignored - no room is invented, so no denominator moves.
+ */
+function planRoomOverrideMerge(prop, rosterRows, hb, reg, ovByRoom) {
+  // Distinct roster rooms, first-seen order. A room occupying several Room
+  // Status rows is still one room holding one device.
+  const rosterKeys = new Set();
+  const rosterRoom = new Map();
+  for (const t of rosterRows) {
+    if (rosterKeys.has(t.room.key)) continue;
+    rosterKeys.add(t.room.key);
+    rosterRoom.set(t.room.key, { display: t.room.display, deviceName: t.deviceName });
+  }
+
+  // The assignment each roster room resolves to today, by exactly the
+  // precedence the pipeline already uses: the heartbeat export first, then the
+  // registry. This is the "before" picture merge builds on top of.
+  const assigned = new Map();
+  const roomOfDevice = new Map();
+  for (const key of rosterKeys) {
+    const tele = hb.byRoom.get(key) || null;
+    const regRec = reg ? reg.byRoom.get(key) || null : null;
+    const deviceId = (tele && tele.deviceId) || (regRec && regRec.deviceId) || null;
+    if (!deviceId) continue;
+    assigned.set(key, {
+      deviceId,
+      deviceName:
+        (regRec && regRec.deviceId === deviceId ? regRec.deviceName : null) ||
+        (rosterRoom.get(key) || {}).deviceName ||
+        null,
+      source: tele && tele.deviceId ? 'export' : 'registry',
+    });
+    // First room wins if the sheets already had one device in two rooms; that
+    // pre-existing inconsistency is not this function's to resolve.
+    if (!roomOfDevice.has(deviceId)) roomOfDevice.set(deviceId, key);
+  }
+
+  const overwritten = [];
+  const relocated = [];
+  const notInRoster = [];
+  const touched = new Set();
+
+  for (const [roomKey, rec] of ovByRoom) {
+    // (d) not on the roster: record it, invent nothing.
+    if (!rosterKeys.has(roomKey)) {
+      notInRoster.push(rec);
+      continue;
+    }
+
+    // (a) the override device takes this room.
+    const displaced = assigned.get(roomKey) || null;
+    if (displaced && displaced.deviceId !== rec.deviceId) {
+      overwritten.push({
+        roomKey,
+        room: rec.room.display,
+        fromDeviceId: displaced.deviceId,
+        fromDeviceName: displaced.deviceName,
+        fromSource: displaced.source,
+        toDeviceId: rec.deviceId,
+        toDeviceName: rec.deviceName,
+      });
+      // That device now has no room here, so a later entry naming it must not
+      // read as a relocation out of a room it no longer occupies.
+      if (roomOfDevice.get(displaced.deviceId) === roomKey) roomOfDevice.delete(displaced.deviceId);
+    }
+
+    // (b) no device in two rooms: vacate wherever else it currently sits.
+    const otherKey = roomOfDevice.get(rec.deviceId);
+    if (otherKey !== undefined && otherKey !== roomKey) {
+      const vacating = assigned.get(otherKey);
+      if (vacating && vacating.deviceId === rec.deviceId) {
+        assigned.delete(otherKey);
+        touched.add(otherKey);
+        relocated.push({
+          deviceId: rec.deviceId,
+          deviceName: rec.deviceName,
+          fromRoomKey: otherKey,
+          fromRoom: (rosterRoom.get(otherKey) || {}).display || otherKey,
+          fromSource: vacating.source,
+          toRoomKey: roomKey,
+          toRoom: rec.room.display,
+        });
+      }
+    }
+
+    assigned.set(roomKey, {
+      deviceId: rec.deviceId,
+      deviceName: rec.deviceName,
+      source: 'override',
+    });
+    roomOfDevice.set(rec.deviceId, roomKey);
+    touched.add(roomKey);
+  }
+
+  // (c) is the absence of anything above: a room never added to `touched` is
+  // read straight from the existing sheet resolution when rows are built.
+  return { assigned, touched, overwritten, relocated, notInRoster, rosterKeys };
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -606,6 +726,11 @@ function normalize() {
   const overrideRoomsNotInRoster = [];
   const overrideRoomsWithoutDevice = [];
   const overrideDiscardedAssignments = [];
+  // Merge-only. A replace cannot produce either: it drops every prior
+  // assignment before it starts, so nothing survives to be overwritten in
+  // place or left behind in a second room.
+  const overrideOverwrittenAssignments = [];
+  const overrideRelocatedDevices = [];
 
   for (const prop of PROPERTIES) {
     const wb = readWorkbook(prop.sheetKey, WO_SHEETS);
@@ -619,8 +744,12 @@ function normalize() {
     // account for, so by this line the map is either complete or the build is
     // already over.
     const ovBlock = roomOverrides.properties[prop.code] || null;
-    const ovReplace = ovBlock && ovBlock.mode === 'replace'
-      ? resolveRoomOverride(prop, ovBlock, particle)
+    const ovResolved = ovBlock ? resolveRoomOverride(prop, ovBlock, particle) : null;
+    const ovReplace = ovBlock && ovBlock.mode === 'replace' ? ovResolved : null;
+    // Merge needs a whole-property view before any row is built, because a
+    // device it places in one room may have to be taken out of another.
+    const ovMergePlan = ovBlock && ovBlock.mode === 'merge'
+      ? planRoomOverrideMerge(prop, rs.rows, hb, reg, ovResolved)
       : null;
 
     const currentTime = hb.currentTime;
@@ -633,6 +762,11 @@ function normalize() {
       const tele = hb.byRoom.get(key) || null;
       const regRec = reg ? reg.byRoom.get(key) || null : null;
       const ovRec = ovReplace ? ovReplace.get(key) || null : null;
+      // Merge only speaks for rooms it actually touched: an override room, or a
+      // room vacated because its device moved. Everything else falls through to
+      // the untouched sheet path below, byte for byte.
+      const mergeTouched = Boolean(ovMergePlan && ovMergePlan.touched.has(key));
+      const mergeRec = ovMergePlan ? ovMergePlan.assigned.get(key) || null : null;
 
       // What the sheets alone would have said. Kept even under an override so
       // the assignments a replace throws away can be listed rather than just
@@ -646,10 +780,18 @@ function normalize() {
       // therefore has no device - which is the honest reading, because the
       // override is a field-verified map and its silence about a room is not
       // evidence that a stale sheet had it right.
-      const deviceId = ovReplace ? (ovRec && ovRec.deviceId) || null : priorDeviceId;
-      const deviceName = ovReplace
-        ? (ovRec && ovRec.deviceName) || null
-        : t.deviceName || (regRec && regRec.deviceName) || null;
+      let deviceId;
+      let deviceName;
+      if (ovReplace) {
+        deviceId = (ovRec && ovRec.deviceId) || null;
+        deviceName = (ovRec && ovRec.deviceName) || null;
+      } else if (mergeTouched) {
+        deviceId = mergeRec ? mergeRec.deviceId : null;
+        deviceName = mergeRec ? mergeRec.deviceName : null;
+      } else {
+        deviceId = priorDeviceId;
+        deviceName = t.deviceName || (regRec && regRec.deviceName) || null;
+      }
 
       if (ovReplace && priorDeviceId && priorDeviceId !== deviceId) {
         overrideDiscardedAssignments.push({
@@ -731,13 +873,24 @@ function normalize() {
         lastChecked: iso(currentTime),
         notes: t.notes,
         registered: ovReplace ? Boolean(ovRec) : Boolean(regRec),
-        // The override carries no install dates, so under a replace this is
-        // absent rather than inherited from a mapping we just discarded.
-        installDate: ovReplace ? null : regRec ? iso(regRec.installDate) : null,
+        // The override carries no install dates. Under replace that makes this
+        // absent outright; under merge it is absent only where the override
+        // changed the room's device, because the registry's date then refers to
+        // a unit that is no longer the one assigned.
+        installDate:
+          ovReplace || (mergeTouched && !(regRec && deviceId && regRec.deviceId === deviceId))
+            ? null
+            : regRec
+              ? iso(regRec.installDate)
+              : null,
         // Where this room's device assignment came from. Kept in
         // normalized.json for analysis; the page reads provenance off the
         // reconciliation block instead.
-        assignmentSource: deviceId ? (ovRec ? 'override' : priorSource) : null,
+        assignmentSource: deviceId
+          ? ovRec || (mergeTouched && mergeRec && mergeRec.source === 'override')
+            ? 'override'
+            : priorSource
+          : null,
       });
     }
 
@@ -862,6 +1015,87 @@ function normalize() {
         rosterRoomsWithoutDevice: overrideRoomsWithoutDevice.filter((x) => x.property === prop.code).length,
         // Sheet-derived assignments this replace threw away.
         discardedAssignments: overrideDiscardedAssignments.filter((x) => x.property === prop.code).length,
+      });
+    }
+
+    // Merge bookkeeping. Nothing here fails the build: every entry is a
+    // difference between the sheets and the field-verified map, and the
+    // difference is exactly what the backfill needs written down.
+    if (ovMergePlan) {
+      // How stale was the device the override displaced? An override that
+      // replaces a unit still reporting hourly is a very different claim from
+      // one replacing a unit silent for months, and the page should say which.
+      const heartbeatOf = (deviceId) => {
+        const api = deviceId ? particle.byId.get(deviceId) || null : null;
+        const heard = api && api.last_heard ? new Date(api.last_heard) : null;
+        const days = heard && !isNaN(heard) ? (builtAt - heard) / DAY_MS : null;
+        return {
+          lastHeard: iso(heard),
+          ageDays: round(days, 1),
+          bucket: bucketByDays(days, THRESHOLDS.heartbeatAge),
+        };
+      };
+
+      for (const rec of ovMergePlan.notInRoster) {
+        overrideRoomsNotInRoster.push({
+          property: prop.code,
+          propertyName: prop.name,
+          room: rec.room.display,
+          deviceName: rec.deviceName,
+          deviceId: rec.deviceId,
+          deviceIdShort: String(rec.deviceId).slice(-6),
+        });
+      }
+
+      for (const o of ovMergePlan.overwritten) {
+        const hbWas = heartbeatOf(o.fromDeviceId);
+        overrideOverwrittenAssignments.push({
+          property: prop.code,
+          propertyName: prop.name,
+          room: o.room,
+          fromDeviceName: o.fromDeviceName,
+          fromDeviceId: o.fromDeviceId,
+          fromDeviceIdShort: String(o.fromDeviceId).slice(-6),
+          fromSource: o.fromSource,
+          fromLastHeard: hbWas.lastHeard,
+          fromAgeDays: hbWas.ageDays,
+          fromBucket: hbWas.bucket,
+          toDeviceName: o.toDeviceName,
+          toDeviceId: o.toDeviceId,
+        });
+      }
+
+      for (const r of ovMergePlan.relocated) {
+        overrideRelocatedDevices.push({
+          property: prop.code,
+          propertyName: prop.name,
+          deviceName: r.deviceName,
+          deviceId: r.deviceId,
+          deviceIdShort: String(r.deviceId).slice(-6),
+          fromRoom: r.fromRoom,
+          fromSource: r.fromSource,
+          toRoom: r.toRoom,
+        });
+      }
+
+      const mappedRooms = ovBlock.rooms.length - ovMergePlan.notInRoster.length;
+      roomOverrideSummaries.push({
+        property: prop.code,
+        propertyName: prop.name,
+        mode: ovBlock.mode,
+        source: ovBlock.source,
+        capturedAt: ovBlock.capturedAt,
+        note: ovBlock.note,
+        pairs: ovBlock.rooms.length,
+        mappedRooms,
+        roomsNotInRoster: ovMergePlan.notInRoster.length,
+        // Rooms whose device the override changed outright.
+        overwritten: ovMergePlan.overwritten.length,
+        // Devices taken out of one room because the override put them in
+        // another. Each one leaves its old room with no device.
+        relocated: ovMergePlan.relocated.length,
+        // Rooms the override does not name and therefore did not touch at all.
+        untouchedRooms: ovMergePlan.rosterKeys.size - ovMergePlan.touched.size,
       });
     }
 
@@ -1171,6 +1405,8 @@ function normalize() {
       overrideRoomsNotInRoster,
       overrideRoomsWithoutDevice,
       overrideDiscardedAssignments,
+      overrideOverwrittenAssignments,
+      overrideRelocatedDevices,
       notes,
     },
   };
@@ -1337,7 +1573,9 @@ function dailyRecord(data) {
   };
 }
 
-module.exports = { normalize, report, dailyRecord, OUT_FILE };
+// planRoomOverrideMerge and resolveRoomOverride are exported for the override
+// unit tests; nothing in the pipeline calls them from outside this file.
+module.exports = { normalize, report, dailyRecord, OUT_FILE, planRoomOverrideMerge, resolveRoomOverride };
 
 if (require.main === module) {
   try {

@@ -37,7 +37,15 @@ const OVERRIDES_FILE = path.join(RAW_DIR, 'room-overrides.json');
 // Modes this pipeline knows how to apply. Anything else fails the build
 // rather than being ignored: a mode we silently skip would leave the page
 // showing the very mapping the override exists to correct.
-const OVERRIDE_MODES = ['replace'];
+//
+//   replace - the override becomes the property's ENTIRE assignment layer;
+//             every sheet-derived room->device pair is discarded first.
+//   merge   - the override wins the rooms it names and nothing else; rooms it
+//             does not name keep whatever the sheets resolve for them today.
+//
+// Use merge where the sheets are broadly working and only some rooms are
+// wrong. Use replace where the sheet map is not trustworthy at all.
+const OVERRIDE_MODES = ['replace', 'merge'];
 
 // Every work order workbook must carry these three sheets.
 const REQUIRED_WO_SHEETS = ['Room Status', 'py_export_batterystatus', 'py_export_heartbeatstatus'];
@@ -252,6 +260,10 @@ function loadRoomOverrides(file) {
       rooms.push({ room, deviceName });
     }
 
+    // Keys this loader does not read are ignored on purpose. "heldOut" is the
+    // documented example: rooms a human deliberately left out of the map,
+    // annotated with why. They are notes for the next person, not instructions
+    // for the build, and nothing here may act on them.
     out[code] = {
       mode: block.mode,
       source: typeof block.source === 'string' ? block.source : null,
@@ -259,6 +271,29 @@ function loadRoomOverrides(file) {
       note: typeof block.note === 'string' ? block.note : null,
       rooms,
     };
+  }
+
+  // A device name may appear at most ONCE across the whole file. Within a
+  // property block that is already caught above; this catches the worse case,
+  // where two BUILDINGS both claim one physical unit. Nothing downstream could
+  // detect it - each block is resolved on its own - and the result would be one
+  // device rendered in two rooms at two properties, both looking authoritative.
+  const claimed = new Map();
+  for (const [code, block] of Object.entries(out)) {
+    for (const entry of block.rooms) {
+      const key = entry.deviceName.toLowerCase();
+      const prev = claimed.get(key);
+      if (prev) {
+        throw new RoomOverrideError(
+          '[overrides] device ' + JSON.stringify(entry.deviceName) + ' is claimed by two properties: ' +
+            prev.code + ' room ' + JSON.stringify(prev.room) + ' and ' +
+            code + ' room ' + JSON.stringify(entry.room) + '.\n' +
+            '  One unit cannot be in two buildings. Resolve it in the field before\n' +
+            '  either block claims it - and hold the room out of the file meanwhile.'
+        );
+      }
+      claimed.set(key, { code, room: entry.room });
+    }
   }
 
   return { properties: out };

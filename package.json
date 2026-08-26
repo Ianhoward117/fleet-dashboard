@@ -9,7 +9,8 @@
     "normalize": "node normalize.js",
     "render": "node render.js",
     "snapshot": "node snapshot.js",
-    "verify": "node verify-live.js"
+    "verify": "node verify-live.js",
+    "test": "node test-overrides.js"
   },
   "engines": {
     "node": ">=18"
