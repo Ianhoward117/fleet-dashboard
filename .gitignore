@@ -1,5 +1,12 @@
 node_modules/
-data/
+# data/ holds build artefacts and is rebuilt every deploy - with one
+# exception. The room-assignment override is a committed SOURCE file: it is
+# the correction we cannot make in the read-only registry workbook, and
+# Netlify and the daily workflow have no other way to see it. Written as
+# data/* rather than data/ so git descends into the directory and the
+# negation below can take effect. See fetch.js loadRoomOverrides().
+data/*
+!data/room-overrides.json
 dist/
 .DS_Store
 .claude/settings.local.json
