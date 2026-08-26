@@ -1492,8 +1492,14 @@ function report(data) {
       console.log(`    pairs in the file                  : ${o.pairs}`);
       console.log(`    mapped onto a room on the roster   : ${o.mappedRooms}`);
       console.log(`    rooms NOT on the sheet roster      : ${o.roomsNotInRoster}  (no row invented; devices stay unmapped)`);
-      console.log(`    roster rooms now without a device  : ${o.rosterRoomsWithoutDevice}`);
-      console.log(`    sheet assignments discarded        : ${o.discardedAssignments}  (the registry backfill's worklist)`);
+      if (o.mode === 'replace') {
+        console.log(`    roster rooms now without a device  : ${o.rosterRoomsWithoutDevice}`);
+        console.log(`    sheet assignments discarded        : ${o.discardedAssignments}  (the registry backfill's worklist)`);
+      } else {
+        console.log(`    rooms whose device was overwritten : ${o.overwritten}`);
+        console.log(`    devices moved out of another room  : ${o.relocated}`);
+        console.log(`    rooms left untouched by the merge  : ${o.untouchedRooms}`);
+      }
     }
   }
 

@@ -253,6 +253,16 @@ const TRENDS = {
     // numbers and the step falls on the 27th. Until that record exists the
     // annotation simply does not render.
     { date: '2026-08-27', label: '6178 room map overridden' },
+    // 6197 and 9502 gained merge-mode overrides: the override wins the rooms it
+    // names, the rest of each property keeps its sheet-derived map. 6197 picks
+    // up 9 rooms that had no device; 9502 has 16 rooms re-pointed and one
+    // device moved between rooms. Both move the fleet's awaiting-room-mapping
+    // line without anything having changed in the field.
+    //
+    // Dated the 27th for the same reason as the entry above: today's history
+    // record was written by the cron before this shipped, so the step lands on
+    // the next one. Both events share that date and the chart shows one marker.
+    { date: '2026-08-27', label: '6197 + 9502 room overrides' },
   ],
 };
 

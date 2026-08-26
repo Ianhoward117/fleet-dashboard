@@ -255,7 +255,8 @@ function render() {
         recon.orphanTelemetryRooms.length + recon.duplicateRoomRows.length +
         recon.liveButUnmapped.length + recon.unknownToParticle.length +
         recon.overrideRoomsNotInRoster.length + recon.overrideRoomsWithoutDevice.length +
-        recon.overrideDiscardedAssignments.length} reconciliation items`
+        recon.overrideDiscardedAssignments.length + recon.overrideOverwrittenAssignments.length +
+        recon.overrideRelocatedDevices.length} reconciliation items`
   );
   console.log(
     payload.history.length

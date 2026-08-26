@@ -504,7 +504,9 @@
                  + (R.unknownToParticle ? R.unknownToParticle.length : 0)
                  + (R.overrideRoomsNotInRoster ? R.overrideRoomsNotInRoster.length : 0)
                  + (R.overrideRoomsWithoutDevice ? R.overrideRoomsWithoutDevice.length : 0)
-                 + (R.overrideDiscardedAssignments ? R.overrideDiscardedAssignments.length : 0);
+                 + (R.overrideDiscardedAssignments ? R.overrideDiscardedAssignments.length : 0)
+                 + (R.overrideOverwrittenAssignments ? R.overrideOverwrittenAssignments.length : 0)
+                 + (R.overrideRelocatedDevices ? R.overrideRelocatedDevices.length : 0);
   document.getElementById('nRecon').textContent = reconTotal;
 
   // Heartbeats are live for every property now, so the only thing that can go
@@ -1148,33 +1150,65 @@
      from the registry, and that the registry itself is still wrong. */
   document.getElementById('reconOverrides').innerHTML = (R.roomOverrides || []).map(function (o) {
     var plural = function (n, one, many) { return n + ' ' + (n === 1 ? one : many); };
+    var isReplace = o.mode === 'replace';
     var gaps = '';
+
     if (o.roomsNotInRoster) {
       gaps += '<li>' + plural(o.roomsNotInRoster, 'pair names a room', 'pairs name rooms')
         + ' that the triage sheet does not list. No room row is invented for them, so the '
         + 'property&rsquo;s room count and its Ok / Issue / Check totals are untouched; those devices '
         + 'stay in the live-but-unmapped list below.</li>';
     }
-    if (o.rosterRoomsWithoutDevice) {
-      gaps += '<li>' + plural(o.rosterRoomsWithoutDevice, 'room on the roster is', 'rooms on the roster are')
-        + ' not named by the override, and now show no device at all.</li>';
-    }
-    if (o.discardedAssignments) {
-      gaps += '<li>' + plural(o.discardedAssignments, 'sheet assignment was', 'sheet assignments were')
-        + ' discarded by the replace. That list is the backfill&rsquo;s worklist, not a fleet event.</li>';
+    if (isReplace) {
+      if (o.rosterRoomsWithoutDevice) {
+        gaps += '<li>' + plural(o.rosterRoomsWithoutDevice, 'room on the roster is', 'rooms on the roster are')
+          + ' not named by the override, and now show no device at all.</li>';
+      }
+      if (o.discardedAssignments) {
+        gaps += '<li>' + plural(o.discardedAssignments, 'sheet assignment was', 'sheet assignments were')
+          + ' discarded by the replace. That list is the backfill&rsquo;s worklist, not a fleet event.</li>';
+      }
+    } else {
+      if (o.overwritten) {
+        gaps += '<li>' + plural(o.overwritten, 'room had its device', 'rooms had their device')
+          + ' changed outright. Where the device being replaced was still reporting, the table below '
+          + 'says so &mdash; that is a stronger claim than replacing one long silent.</li>';
+      }
+      if (o.relocated) {
+        gaps += '<li>' + plural(o.relocated, 'device was', 'devices were')
+          + ' moved out of another room in this property, because no device can occupy two rooms. '
+          + 'Each one leaves its old room with nothing assigned.</li>';
+      }
+      if (o.untouchedRooms) {
+        gaps += '<li>' + plural(o.untouchedRooms, 'room is', 'rooms are')
+          + ' not named by the override and were left exactly as the sheets resolve them.</li>';
+      }
     }
 
+    var headline = isReplace
+      ? 'Room assignments for ' + esc(o.property) + ' ' + esc(o.propertyName)
+          + ' come wholly from a committed override'
+      : 'Room assignments for ' + esc(o.property) + ' ' + esc(o.propertyName)
+          + ' are corrected by a committed override';
+
+    var body = isReplace
+      ? 'All ' + o.pairs + ' room-to-device pairs for this property are read from a file kept in '
+          + 'this repository, and <b>' + o.mappedRooms + '</b> of them match a room on the sheet roster. '
+          + 'The registry workbook&rsquo;s mapping and the export&rsquo;s are both discarded for '
+          + esc(o.property) + '.'
+      : 'A file kept in this repository names <b>' + o.mappedRooms + '</b> of this property&rsquo;s rooms, '
+          + 'and wins those rooms only. Every room it does not name keeps whatever the registry and the '
+          + 'export resolve for it, so this corrects ' + esc(o.property) + ' room by room rather than '
+          + 'replacing its map.';
+
     return '<div class="prov">'
-      + '<h2>Room assignments for ' + esc(o.property) + ' ' + esc(o.propertyName)
-        + ' come from a committed override</h2>'
-      + '<p>All ' + o.pairs + ' room-to-device pairs for this property are read from a file kept in '
-        + 'this repository, and <b>' + o.mappedRooms + '</b> of them match a room on the sheet roster. '
-        + 'The registry workbook&rsquo;s mapping and the export&rsquo;s are both discarded for '
-        + esc(o.property) + '.<br><span class="src">source: ' + esc(o.source || 'unstated')
+      + '<h2>' + headline + '</h2>'
+      + '<p>' + body
+        + '<br><span class="src">mode: ' + esc(o.mode) + ' &middot; source: ' + esc(o.source || 'unstated')
         + ' &middot; captured ' + esc(fmtYmd(o.capturedAt)) + '</span></p>'
-      + '<p class="open">The registry workbook has not been corrected at source. This dashboard is '
-        + 'read-only against the sheets, so the registry and export backfill remains an open ask with '
-        + 'Priya &mdash; nothing here closes it.</p>'
+      + '<p class="open">No registry or export sheet has been corrected at source. This dashboard is '
+        + 'read-only against the sheets, so that backfill remains an open ask with Priya &mdash; nothing '
+        + 'here closes it.</p>'
       + '<p>The override moves device assignment only. The room roster, the triage status and the '
         + 'battery voltages stay sheet-owned.</p>'
       + (gaps ? '<ul>' + gaps + '</ul>' : '')
@@ -1195,6 +1229,13 @@
   function block(title, count, desc, html) {
     return '<div class="recon-block"><div class="recon-hd"><h2>' + esc(title) + '</h2>'
       + '<span class="n">' + count + '</span><p>' + desc + '</p></div>' + html + '</div>';
+  }
+  /* The "fresh" cutoff, read from the confirmed thresholds rather than typed
+     into the copy, so the sentence cannot drift from the buckets. */
+  function freshWindowDays() {
+    var g = DATA.thresholds && DATA.thresholds.heartbeatAge;
+    var b = g && g.buckets ? g.buckets.filter(function (x) { return x.key === 'fresh'; })[0] : null;
+    return b && b.maxDays != null ? b.maxDays : 2;
   }
   function propCell(x) {
     return '<td class="rowhead" data-label="Prop"><b>' + esc(x.property) + '</b> <span class="muted">' + esc(x.propertyName) + '</span></td>';
@@ -1259,6 +1300,45 @@
         return '<tr>' + propCell(o)
           + '<td class="num" data-label="Room"><b>' + esc(o.room) + '</b></td>'
           + '<td data-label="Triage status">' + esc(o.status) + '</td></tr>';
+      }));
+  }
+
+  var ovOverwritten = R.overrideOverwrittenAssignments || [];
+  if (ovOverwritten.length) {
+    var freshHit = ovOverwritten.filter(function (o) { return o.fromBucket === 'fresh'; }).length;
+    blocks += block('Assignments the override overwrote', ovOverwritten.length,
+      'A merge-mode override named a different device for these rooms, so the device the sheets had '
+      + 'there was dropped. The age column is how long the DROPPED device had been silent: replacing '
+      + 'one that stopped reporting months ago is routine, replacing one still reporting is a claim '
+      + 'worth checking.'
+      + (freshHit
+          ? ' <b>' + freshHit + ' of these replaced a device still reporting within '
+            + freshWindowDays() + ' days.</b>'
+          : ''),
+      table(['Prop', 'Room', 'Sheets had', 'Silent for', 'Override says'], ovOverwritten, function (o) {
+        return '<tr>' + propCell(o)
+          + '<td class="num" data-label="Room"><b>' + esc(o.room) + '</b></td>'
+          + '<td class="mono" data-label="Sheets had">' + esc(o.fromDeviceName || o.fromDeviceIdShort)
+            + ' <span class="muted">(' + esc(o.fromSource) + ')</span></td>'
+          + '<td class="num" data-label="Silent for" title="' + esc(fmtDateTime(o.fromLastHeard)) + '">'
+            + '<span class="nb ' + toneClass(o.fromBucket === 'fresh' ? 'bad' : o.fromBucket === 'aging' ? 'warn' : 'flat') + '">'
+            + fmtDays(o.fromAgeDays) + '</span></td>'
+          + '<td class="mono" data-label="Override says">' + esc(o.toDeviceName) + '</td></tr>';
+      }));
+  }
+
+  var ovRelocated = R.overrideRelocatedDevices || [];
+  if (ovRelocated.length) {
+    blocks += block('Devices the override moved between rooms', ovRelocated.length,
+      'The override placed these devices in a room while the sheets had them in a different room of '
+      + 'the same property. No device can occupy two rooms, so each was taken out of its old room, '
+      + 'which now has nothing assigned to it.',
+      table(['Prop', 'Device', 'Sheets said', 'Override says'], ovRelocated, function (o) {
+        return '<tr>' + propCell(o)
+          + '<td class="mono" data-label="Device">' + esc(o.deviceName || o.deviceIdShort) + '</td>'
+          + '<td class="num" data-label="Sheets said">room <b>' + esc(o.fromRoom) + '</b>'
+            + ' <span class="muted">(' + esc(o.fromSource) + ')</span></td>'
+          + '<td class="num" data-label="Override says">room <b>' + esc(o.toRoom) + '</b></td></tr>';
       }));
   }
 
