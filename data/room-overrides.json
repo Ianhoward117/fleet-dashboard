@@ -2,10 +2,10 @@
   "_README": "Per-property room->Particle device NAME overrides. Room roster, triage status and battery remain sheet-owned: an override governs room-to-device ASSIGNMENT only, and can never invent a room or move a denominator. Device names resolve to Particle device IDs via the product device list already fetched at build time. mode 'replace' takes a property's assignments ENTIRELY from this file, discarding every sheet-derived pair first. mode 'merge' wins only the rooms it names; rooms it does not name keep whatever the sheets resolve for them. A device name may appear at most once across the whole file. 'heldOut' is documentation for humans - the loader ignores it. Google Sheets are read-only: fixing the registry and the exports at source is still required.",
   "properties": {
     "6178": {
-      "mode": "replace",
+      "mode": "merge",
       "source": "6178 room data.xlsx (Ian Howard)",
       "capturedAt": "2026-08-26",
-      "note": "Field-verified install map for ESA 6178 Austin - Southwest. Supersedes the registry workbook for room/device assignment only.",
+      "note": "Field-verified install map for ESA 6178 Austin - Southwest. Moved from replace to merge on 2026-08-29: the 2026-08-26 py_export refresh took the export's room->device map from ~32 rooms to 86, so the sheets can now describe rooms this file does not name, and replace was discarding them.",
       "rooms": {
         "101": "P2-0615",
         "102": "P2-0601",
@@ -88,7 +88,7 @@
         "428": "P2-0433",
         "429": "P2-0451",
         "430": "P2-0561",
-        "A322": "P2-0744"
+        "322": "P2-0744"
       }
     },
     "6197": {

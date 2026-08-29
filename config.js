@@ -263,6 +263,26 @@ const TRENDS = {
     // record was written by the cron before this shipped, so the step lands on
     // the next one. Both events share that date and the chart shows one marker.
     { date: '2026-08-27', label: '6197 + 9502 room overrides' },
+    // 6178 moved from replace to merge. Replace took the property's assignments
+    // entirely from the override file, so the 28 roster rooms it does not name
+    // had no device at all; merge lets the sheets keep speaking for them. 27 of
+    // those 28 became attributable to a device, so the fleet's
+    // awaiting-room-mapping and silent lines both step.
+    //
+    // Nothing changed in the field. The step is clerical: the 2026-08-26
+    // py_export refresh took the export's room->device map from ~32 rooms to 86,
+    // and those devices were already live and already counted - they simply
+    // became attributable to a room.
+    //
+    // Read the silent line carefully here. Only 4 of the 27 are live; the other
+    // 23 are devices last heard 32-270 days ago, which move from "no device" to
+    // "reporting, but stale". Silent falling 28 -> 1 is a clerical step and not
+    // a recovery.
+    //
+    // Dated the 29th, not the 30th: history/2026-08-29.json had not been written
+    // when this shipped, so today's record is the first one that carries the new
+    // numbers - the same convention as the entries above.
+    { date: '2026-08-29', label: '6178 override -> merge' },
   ],
 };
 
