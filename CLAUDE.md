@@ -323,6 +323,46 @@ Everything else is vanilla Node and vanilla browser JS.
   **Known code gap, awaiting its own session** — it is a change to a
   load-bearing path and does not belong in a data-only commit.
 
+- **`heldOut` withholds the override's opinion, not the assignment — and on
+  `merge` that means the sheets answer instead.** The file's `_README` says the
+  loader ignores `heldOut`, but not what follows from that, and the consequence
+  is the opposite of what the name suggests. A room left out of `rooms{}` is
+  not a room left unassigned: it simply falls through to the ordinary chain,
+  `py_export_heartbeatstatus` byRoom → registry byRoom. **Holding a room out is
+  choosing the sheet's answer, not no answer.** Under `replace` the room would
+  have ended up with no device, so this trap only bites on `merge` — which all
+  three properties now use.
+
+  The live proof is **9502 room 308**. Its note says the pair was held *"pending
+  field confirmation of which building holds it"*, because 6178 already claims
+  that device. The export assigned `P2-0433` to room 308 anyway, so the device
+  renders in two rooms at two properties — exactly the outcome the hold-out was
+  written to prevent. (Particle tags it `esa_6178`, so it is also an instance
+  of the missing cross-property guard above.)
+
+  **6197 carries ten more `heldOut` rooms on `merge`**, and they are worth
+  reading because they show three different things the key is being used for:
+
+  - **Rooms 110 and 113 are the trap firing.** Both were held out precisely
+    because the sheet listed *two* devices and whoever captured it refused to
+    guess. The export then guessed for them — supplying `P2-0841` for 110 and
+    `P2-0741` for 113, one of the two candidates each time, with nothing on the
+    page marking it as a coin-flip.
+  - **Room 102 is the trap not firing, by luck.** Its sheet value `P2-0359`
+    matches no device in product 18173 under any spelling, and the export and
+    registry have nothing for that room either, so it genuinely resolves to no
+    device. Had the export carried a row, it would have won.
+  - **Room 109 is not a withholding at all** — it appears in `rooms{}` *and*
+    `heldOut{}`, the note annotating why a second sheet row was disregarded.
+    The remaining six name rooms that are not on the 6197 roster, so they are
+    moot.
+
+  **Nothing here is a code bug** — the loader does exactly what the `_README`
+  says. It is a documentation gap with teeth: anyone adding a `heldOut` entry
+  should know they are handing the decision to the sheets. Whether that is
+  acceptable, or whether the file needs a real "leave this room unassigned"
+  mechanism, is a design question and not this session's to answer.
+
 - **6178's statuses do not cover its roster: 13 + 69 + 11 = 93 against 109
   rooms.** The other **16 rooms carry a null status** and normalize buckets
   them as `Unknown`. These are the rows Priya added in the 2026-08-26 refresh
@@ -353,19 +393,56 @@ Everything else is vanilla Node and vanilla browser JS.
   include a device after its first data lands, with 6178 installs continuing
   into June.
 
-  **Net read: the hardware is probably fine in many more rooms than the page
-  can show, and the bottleneck is registry/export backfill — a field and
-  clerical task, not an engineering one.** The fix is to get those ~52 devices
-  mapped to rooms, after which most should appear as healthy. Do not present
-  6178's current numbers as a fleet regression.
+  **Net read (as of 2026-08-20): the hardware is probably fine in many more
+  rooms than the page can show, and the bottleneck is registry/export backfill
+  — a field and clerical task, not an engineering one.** The fix is to get
+  those ~52 devices mapped to rooms, after which most should appear as healthy.
+
+  **RESOLVED 2026-08-29, and the resolution proves the diagnosis.** The ~52
+  figure is the 2026-08-20 reading and is kept above as the record of how this
+  looked. **Live-but-unmapped at 6178 is now 0**, and 108 of 109 rooms carry a
+  device. Two clerical steps did it and nothing else: the 2026-08-26
+  `py_export` refresh took the export's room→device map from ~32 rooms to 86,
+  and the 2026-08-29 flip from `replace` to `merge` let those pairs reach the
+  page. **No one went to Austin.** The backfill prediction was right — the
+  devices were there the whole time, waiting on paperwork.
+
+  **The guidance survives, and now cuts both ways. Do not present 6178's
+  numbers as a fleet regression — and do not present this as a fleet
+  recovery.** Silent fell 28 → 1, but only 4 of the 27 newly-mapped rooms hold
+  a live device; the other 23 were last heard 32–270 days ago and merely moved
+  from "no device" to "reporting, but stale". Both the August dip and this
+  rise are measurement artefacts. The honest series to quote is the heartbeat
+  histogram, not the silent count.
 
 - **9502 improved under live data:** silent dropped from 9 to 3 once
   heartbeats stopped being measured against a 36-day-old export. Same
   direction of correction as 6178, opposite sign — further evidence this is a
   measurement change, not a fleet change.
-- **The `py_export` refresh still gates battery, rooms and triage status.**
-  v2 fixed heartbeats only. Battery voltages at 6178 are ~69 days old on
-  average. Scheduling that Python export remains the highest-value fix.
+- **SCHEDULING the `py_export` is still the highest-value fix. The premise
+  below changed on 2026-08-26; the conclusion did not.** v2 fixed heartbeats
+  only — battery, rooms and triage status are still gated on that export.
+
+  *What changed.* Priya ran the export **manually on 2026-08-25/26**, the first
+  fresh one since June/August. 6178's battery age went **~69d → 8.1d**, its
+  roster went 93 → 109 rooms, and the export's room→device map went ~32 → 86
+  rooms. So the figure this item used to quote ("~69 days old on average") is
+  the pre-refresh reading and is retained here only as the record.
+
+  *What it proved.* The collector was never the problem. Battery ages dropped
+  the instant the export ran, which means **the battery collector never
+  stopped — only the export did.** That closes question 2 of
+  `probe/FINDINGS.md` §7. **Question 3 stays open:**
+  `py_export_batterystatus` still carries no `CurrentTime` column, so battery
+  age is measured per-row from `LastTimestamp` and there is no way to tell a
+  stale collector from a stale export except by watching them move.
+
+  *Why the conclusion sharpens rather than softens.* A single manual run
+  drifts straight back to stale — it buys days, not a fix, and the drift is
+  invisible until someone reads a two-month-old voltage as current. **Get the
+  export on a schedule.** Until it is, treat every battery number on the page
+  as "as of the last time someone remembered", and check the per-property
+  freshness badge before quoting one.
 - `npm audit` flags xlsx 0.18.5 (prototype pollution, ReDoS). No npm-side fix
   exists; patched builds are only on SheetJS's own CDN. Judged acceptable for
   a build-time parser reading our own sheets.
