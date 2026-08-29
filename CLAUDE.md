@@ -50,6 +50,16 @@ state, decisions already made, and the environment traps.
   design. The probe keeps its own broader credential as
   `PARTICLE_PROBE_TOKEN` so the two never shadow each other. Never print
   either, in any form.
+- **The Room Status `Device#` column is DISPLAY TEXT ONLY.** It is read
+  generically for *all* three properties — `findKey(probe, /^device\s*#/i)` in
+  `readRoomStatus`, no property-specific branch — and the value only ever
+  becomes a room's `deviceName`. It never feeds assignment for any property.
+  Room-to-device assignment resolves **override → `py_export_heartbeatstatus`
+  byRoom → registry byRoom → null**, and that is the whole chain. A room can
+  therefore show a device *name* on the page and still be unassigned and
+  never-reporting. Wiring `Device#` to assignment would need new code; do not
+  assume it is already wired because the column is populated. This cost a full
+  investigation session to establish.
 
 ## Commands
 
@@ -157,7 +167,8 @@ Everything else is vanilla Node and vanilla browser JS.
   Per-series scaling was considered and rejected.
 - **v1.6 shipped 2026-08-26: per-property room-assignment overrides**, loaded
   from the committed `data/room-overrides.json`, with 6178 as the first entry
-  (82 field-verified pairs, `mode: "replace"`). The file keys on Particle
+  (82 field-verified pairs, `mode: "replace"` *as shipped — 6178 moved to
+  `merge` on 2026-08-29, see below*). The file keys on Particle
   device *name*; names resolve against the device list `fetch.js` already
   pulls, so the build still makes exactly 13 requests. `replace` discards
   **both** sheet-derived assignment sources for that property — the registry
@@ -165,6 +176,34 @@ Everything else is vanilla Node and vanilla browser JS.
   one is the important half: at 6178, 30 of the 30 discarded assignments came
   from the export, so displacing only the registry would have changed almost
   nothing.
+- **Overrides have two modes as of 2026-08-26** (`adb3e2c`, applied in
+  `f479613`). `replace` takes a property's assignments **entirely** from the
+  file, discarding every sheet-derived pair first — so a room the file does not
+  name has no device at all. `merge` wins only the rooms it names; rooms it
+  does not name keep whatever the sheets resolve for them. Merge is a
+  whole-property pass (`planRoomOverrideMerge`), not a per-room decision,
+  because a device the override places in room X may currently sit in room Y of
+  the same property and has to be taken out of Y. Use `merge` where the sheet
+  map is broadly working and only some rooms are wrong; use `replace` only
+  where the sheet map is not trustworthy at all. 6197 (90 pairs) and 9502
+  (32 pairs) shipped as `merge` on 2026-08-26.
+- **6178 moved from `replace` to `merge` on 2026-08-29** (Ian). The 2026-08-26
+  `py_export` refresh took 6178's export room→device map from ~32 rooms to 86,
+  so the sheets can now describe rooms the override does not name — and
+  `replace` was discarding them. Under merge 27 of the 28 previously
+  deviceless rooms pick up a device (24 export, 2 registry, 1 override); only
+  room 415, blank in every source, stays unassigned. The same commit renamed
+  the pair `A322` to `322`: `A322` is not on the Room Status roster so the pair
+  was inert, while roster room 322 held the same physical unit (`P2-0744`,
+  id `…0186f8`) and was stranded by replace.
+
+  **Frame this honestly. It is not a recovery.** Silent falls 28 → 1, but only
+  **4** of the 27 are live; the other **23** come back as devices last heard
+  **32–270 days ago**, moving from "no device" to "reporting, but stale". The
+  heartbeat histogram tells the true story: fresh 40→44, aging 15→15, stale
+  26→**49**, never 28→1. It is still the better reading for triage, because
+  "P2-0158, silent 67d" is an actionable row and "no device" is not. The
+  `TRENDS` annotation dated 2026-08-29 says this on the chart.
 - **An override governs room-to-device ASSIGNMENT only.** Room roster, triage
   status and battery stay sheet-owned, so it can never invent a room, move a
   denominator, or talk a red room green. `render.js` asserts the pairs balance
@@ -180,24 +219,47 @@ Everything else is vanilla Node and vanilla browser JS.
   on deprecated node20. Check each action's own releases before bumping rather
   than assuming a version from memory.
 
-## Current state (2026-08-26)
+## Current state (2026-08-29)
 
-- **6178's room map now comes from the override.** 33 -> **65** of its 93 rows
-  carry a device; heartbeats went 4 fresh / 2 aging / 27 stale / 60 never ->
-  **45 / 10 / 10 / 28**. Live-but-unmapped at 6178 dropped **52 -> 5**, and
-  fleet-wide 176 -> 129. Ok/Issue/Check (13/69/11), the 303-row denominator,
-  the 155-row triage queue and every battery histogram are unchanged, at 6178
-  and at the other two properties.
-- **Only 63 of the override's 82 pairs land**, because 19 name rooms the 6178
-  triage sheet does not carry. See "6178 floor 4" under Open items before
-  reading that as a shortfall in the code.
-- **11 days of history** (16-26 Aug); the daily workflow has run green
-  throughout. `history/2026-08-26.json` was written by the cron *before* this
-  shipped, so it still carries the pre-override numbers and the trend step
-  falls on the 27th — which is why the TRENDS annotation is dated 2026-08-27.
+- **Priya re-ran the `py_export` on 2026-08-25/26 — the first fresh export
+  since June/August**, and it landed in all three work-order workbooks. It
+  changed the sheets in ways the docs did not describe: 6178's Room Status went
+  **93 → 109 rooms** and gained a populated `Device#` column (108/109); all
+  three tabs gained a `Calibration Risk` column; and the date-bearing headers
+  now read `[Aug 26, 2026]`. The date-bearing headers still match, because
+  every column is found by prefix regex, and `Calibration Risk` is silently
+  ignored — nothing asserts on the column set.
+  **It also settles a question that was open on the battery collector: the
+  collector never stopped, only the export did.** Battery ages fell back into a
+  normal range the moment the export refreshed.
+- **6178 now runs `mode: "merge"`** (shipped today). Counts against live data:
+  **109 rooms, 108 with a device, 1 without** (room 415, blank in every
+  source). Heartbeats **fresh 44 / aging 15 / stale 49 / never 1**.
+  Live-but-unmapped at 6178 is **0** (was 3), fleet-wide **108** (was 112).
+  Ok/Issue/Check (13/69/11), the 319-room denominator, the 161-row triage queue
+  and every battery histogram are unchanged, at 6178 and at the other two.
+  **Read the histogram, not the silent count** — see the merge decision above.
+- **All 82 of the override's pairs now land**, up from 81, because `A322` was
+  renamed to the roster's `322`. Nothing is held out and
+  `overrideRoomsNotInRoster` for 6178 is empty.
+- **Fleet: 319 rooms, 142 Ok / 142 Issue / 19 Check, 161 in the triage queue.**
+  6197 94 rooms (57/29/8), 6178 109 (13/69/11 + 16 null-status), 9502 116
+  (72/44/0).
+- **13 days of history** (16-28 Aug); the daily workflow has run green
+  throughout. `history/2026-08-29.json` did **not** exist when this shipped, so
+  today's record is the first that carries the new numbers — which is why the
+  TRENDS annotation is dated 2026-08-29 rather than the 30th.
 - A stale local checkout makes `git diff origin/main` look like it deletes
   history files. It does not: they are commits you have not pulled. **Always
   `git pull --rebase` first** — this is exactly the trap that rule guards.
+
+## Previous state (2026-08-26)
+
+- 6178 ran `mode: "replace"`: 81 of its 109 rows carried a device, 28 did not,
+  and heartbeats read 40 fresh / 15 aging / 26 stale / 28 never.
+  Live-but-unmapped at 6178 was 5 against the pre-refresh sheets, 3 after.
+- Only 81 of the override's 82 pairs landed; `A322` named a room the roster
+  does not carry. 11 days of history (16-26 Aug).
 
 ## Previous state (2026-08-20)
 
@@ -224,25 +286,52 @@ Everything else is vanilla Node and vanilla browser JS.
 
 ## Open items
 
-- **6178 floor 4: the override and the roster describe different rooms.** On
-  floors 1-3 the override overlaps the triage roster almost exactly (17/23/23
-  rooms in common). **On floor 4 the overlap is zero.** The roster carries 401,
-  402, 403, 407-411, 418, 422, 424, 432; the override carries 404, 405, 406,
-  412-417, 419-421, 423, 425, 426, 428, 429, 430. Two disjoint sets on one
-  floor is the signature of a numbering mismatch, not a backfill gap.
+- **6178 floor 4: two device generations, and the 2026-08-26 export reframes
+  it.** *(Rewritten 2026-08-29. The earlier reading — "two documents describing
+  the same rooms differently", i.e. a numbering mismatch — is no longer what
+  the data shows.)* On floor 4 the override and the triage roster still have
+  zero overlap: the override covers 404-406, 412-417, 419-421, 423, 425-430 and
+  the export covers 401-403, 407-411, 418, 422, 424, 432. But against the
+  refreshed export those two sets are **complementary, not conflicting** —
+  under merge every floor-4 room resolves to a device, and there is exactly
+  **one** disagreement property-wide (room 404, see the cross-property guard
+  item below). Disjoint sets that between them tile the floor are two
+  generations of hardware in *different* rooms, not one set of rooms numbered
+  two ways.
 
-  Two facts sharpen it. **15 of the 19 unmatched override devices last reported
-  ~133 days ago**, all within 0.3 days of each other — a whole-floor silence in
-  early April, not a scatter. The exceptions are 208, 426, 428 and A322, which
-  are live now. And **27 of the 30 assignments the replace discarded** were
-  already stale devices from the old low-numbered range (`P2-0008`-`P2-0231`),
-  against the override's `P2-0303`-`P2-0825`.
+  The generational split is still real and still visible: the export's floor-4
+  devices are the old low-numbered range (`P2-0008`-`P2-0231`), against the
+  override's `P2-0303`-`P2-0825`, and most of the old ones last reported
+  ~133 days ago in a tight cluster — a whole-floor silence in early April, not
+  a scatter. Merge now shows both generations rather than neither.
 
-  Read together: floor 4 looks like it holds two hardware generations and the
-  page can currently show neither. **Do not "fix" this by editing the override
-  to match the roster** — the question is which document describes the building,
-  and that is a field question. Until it is answered, those 19 devices stay
-  unmapped and are listed in Reconciliation.
+  **This does not close the field question.** Nobody has walked floor 4 and
+  confirmed which units are physically installed where; what changed is that
+  the documents no longer contradict each other, so the remaining question is
+  "are the old-range units still in these rooms?" rather than "which document
+  is right?". Still do not edit the override to match the roster.
+
+- **The export path has no cross-property guard, and room 404 is a live
+  instance.** `resolveRoomOverride` refuses to place a device that carries
+  another live property's `esa_` group tag, and fails the build rather than
+  half-applying. **The export path has no equivalent check.** At 6178, the
+  export maps room 404 to device `…017d04`, which is named `P2-0457` and
+  carries the group tag **`esa-6197`** — a Round Rock unit sitting in an Austin
+  room in the export. The override happens to win room 404, so nothing wrong
+  reaches the page today, and an audit of all 27 rooms merge newly assigns
+  found no other instance. But nothing in the code would catch it if it spread.
+  **Known code gap, awaiting its own session** — it is a change to a
+  load-bearing path and does not belong in a data-only commit.
+
+- **6178's statuses do not cover its roster: 13 + 69 + 11 = 93 against 109
+  rooms.** The other **16 rooms carry a null status** and normalize buckets
+  them as `Unknown`. These are the rows Priya added in the 2026-08-26 refresh
+  (the roster went 93 → 109) that do not yet have triage against them. The
+  behaviour is correct — status is sheet-owned and the dashboard will not
+  invent one — but a property card whose three numbers do not sum to its room
+  count is easy to misread. **This is the number most likely to be questioned
+  at the mid-September ESA/David meeting.** Getting those 16 rooms triaged is a
+  Priya/field task, not an engineering one.
 
 - **The 6178 registry/export backfill is still open with Priya.** The override
   corrects the dashboard, not the source. `py_export_*` still gates battery,
