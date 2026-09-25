@@ -110,7 +110,7 @@ Where the two disagree, this document wins, because the sheet has moved since th
 |---|---|
 | `Location` (both tabs) | A **number** in all 319 `roomstatus` rows and all 282 `heartbeatstatus` rows. Convert it to a 4-digit **string** code before comparing with `PROPERTIES[].code`. A number-to-string compare fails silently: in `roomstatus` it yields zero rows (the zero-rows FAIL catches that); in `heartbeatstatus` it empties every Location attribution (§6) and every per-property `CurrentTime` (§7), and nothing catches it. A `roomstatus` row whose code is outside the three is excluded and never counted (0 today). **Decided (D15):** it is dropped and logged, not listed. |
 | `Rooms` | Normalize with `normRoom` (`102.0`→`"102"`; letter suffixes kept); the key is lowercased. A duplicate (property, room) keeps every row and raises the existing duplicate note (0 today). |
-| `DeviceId` | `normStr`, valid only if it matches `/^[0-9a-f]{24}$/i`. Blank means no device: 15 cells are formulas returning `""` and 2 are absent. A non-blank value that is not 24-hex, or not known to Particle, is **flagged F3 and bucketed `never`**. It never fails the build (0 today). |
+| `DeviceId` | `normStr`, valid only if it matches `/^[0-9a-f]{24}$/i`. Blank means no device: 15 cells are formulas returning `""` and 2 are absent. A non-blank value that is not 24-hex, or not known to Particle, is **flagged F3 and bucketed `never`**. It never fails the build (0 today). **Contradiction (Block 2):** the implementation reads the `normStr` placeholder tokens (`NA`, `n/a`, `No device`, `-`, `--`, `null`) as blank, i.e. *no device*, not as F3. Spreadsheet errors (`#REF!`, `#VALUE!`, `#N/A` and kin) are F3, bucket `never`. 0 cells today. Open for Ian: keep, or make every typed non-id F3. |
 | `Status` | `normStr(...) \|\| 'Unknown'`. Triage is Issue + Check. |
 | `Action Item` | `actionType()`. The literal `None` means no action (256 rows). |
 | Battery voltage | `normNum` of the `/^battery status/i` column, then `batteryClass()` with the confirmed thresholds, unchanged. |
@@ -127,6 +127,19 @@ Where the two disagree, this document wins, because the sheet has moved since th
 - **Legacy exports:** they behave the same way, so today's published battery ages are about 0.2 d too old.
 - **Coverage:** every compared timestamp falls in CDT, so the Nov 1 switch to CST is unconfirmed (Q11).
 
+> **Corrections from the Block 2 re-verification (2026-09-25, Sep 25 export; these contradict two lines above).**
+> - *`LastTimestamp` does not equal `last_heard` exactly.* No row matches to the second under either reading. The 28
+>   near-matches fall **7–172 s before** `last_heard`: 28 of 73 long-silent rows are within 4 min read as Central, and
+>   0 read as UTC, where the same 28 sit at −5 h. The conclusion, Central, stands. Block 1's "exact" counted
+>   differences that round to 0.0 h at 0.1 h resolution.
+> - *Not every compared timestamp is CDT.* One is CST-dated: `batterystatus` row 88, **P2-38** (`…02b91c`),
+>   2025-11-26 06:19 Central. It matches `last_heard` under neither reading (−143 h Central, −149 h UTC), so it
+>   carries no CST evidence, and Q11 stays open.
+> - The other columns confirm Central. `heartbeatstatus.LastHeartbeat` (not read by the build) has 65 of 70
+>   long-silent rows within 4 min as Central and 0 as UTC. The other 5 are later than `last_heard` under both
+>   readings, so they are not a zone effect. `heartbeatstatus.CurrentTime` reads 11:48:26 / :31 / :36 CDT; read as
+>   UTC, 31 rows would have been heard after the export that contains them.
+
 **What the columns actually are** (D1, accepted)
 - `DeviceId` is a lookup formula over `heartbeatstatus` by (Location, RoomNumber) in 282 of 319 cells. 35 cells are typed and 2 are absent.
 - `Battery Status` is a lookup of `batterystatus.BatteryVoltage_V` by DeviceId in all 319 cells.
@@ -141,7 +154,7 @@ Where the two disagree, this document wins, because the sheet has moved since th
 | room → device | `roomstatus.DeviceId` | Nothing else. No fallback. |
 | device → liveness | Particle `id` | `last_heard` against build time: <2 d fresh, 2–7 aging, >7 stale, else never. **Decided (D11):** report *no device* (blank DeviceId) separately from *never*. |
 | device → battery age | `batterystatus.ParticleDeviceId` | Never by `RoomNumber`. |
-| device → attribution (unmapped only) | A live `esa_####` / `esa-####` group via `particleGroupCode`; else `heartbeatstatus.Location` by id | Keep the anchored regex: `baseline_6_shelves_esa_wifi_spi` must not match. **A Location-attributed device is labelled "attributed by export Location" on Reconciliation (D2, decided).** **Decided (D5b):** an untagged device with more than one `heartbeatstatus.Location` is unattributable. |
+| device → attribution (unmapped only) | A live `esa_####` / `esa-####` group via `particleGroupCode`; else `heartbeatstatus.Location` by id. **Contradiction (Block 2):** the implementation takes the first `esa_` group that names a *live* property (`liveTagOf`); `particleGroupCode` takes the first `esa_` group of *any* property. They differ only for a device with two or more `esa_` groups: 0 of 879 today. F2 uses the same rule. | Keep the anchored regex: `baseline_6_shelves_esa_wifi_spi` must not match. **A Location-attributed device is labelled "attributed by export Location" on Reconciliation (D2, decided).** **Decided (D5b):** an untagged device with more than one `heartbeatstatus.Location` is unattributable. |
 | device → display name | **D8, decided: Particle name by id** | Not the `Device# ` text, which is never read. They differ on 3 rows: 6178/418 (`P2-0823` vs Particle `P-0823`), and 6197/226 and 6197/237 (sheet `P-`, Particle `P2-`). **`Device# ` must never be resolved to an id**; that is exactly what caused the §0 outage. |
 
 ---
@@ -311,6 +324,8 @@ P2-0891 left this list when the Sep 25 export put it in 6197/103.
 | **D14** | **Delete the sheet-header date label** with its sites (§7). D5's per-property stamp supersedes it, and the Sep 25 export shows a header date cannot vouch for battery data. |
 | **D15** | **Drop out-of-scope `roomstatus` rows, and log them.** |
 | **D16** | **FAIL unless every in-scope row lands in exactly one property** (§2). |
+| **D11 bars** | **The card's heartbeat bars draw a "No device" bucket in Block 2** (config `heartbeatAge.noDeviceBucket`, neutral tone). The D11 split had made every card's bars drop its no-device rooms, which is breakage rather than new UI. Every card's bars sum to its room count. The rest of D11's display waits for Block 3. |
+| **No room number** | **A row with a configured Location but a blank room number is dropped and logged, like D15, and is never fatal.** D16 guards the partition, not room identity, and a half-typed row must not take the site down. Its count is reported beside the D15 count (0 today). |
 
 **Pending for Block 3** (not implemented in Block 2)
 
