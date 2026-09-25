@@ -237,9 +237,41 @@ t('24-hex is valid, lowercased, trimmed', () => {
   });
 });
 t('blank means no device: null, the formula "", whitespace, NA', () => {
-  for (const v of [null, undefined, '', '   ', 'NA', '#N/A']) {
+  for (const v of [null, undefined, '', '   ', 'NA', 'No device']) {
     assert.deepStrictEqual(N.readDeviceIdCell(v), { id: null, raw: null, problem: null }, JSON.stringify(v));
   }
+});
+t('a spreadsheet error is not a blank: it is F3 and buckets never', () => {
+  for (const v of ['#REF!', '#VALUE!', '#N/A', '#NAME?', ' #ERROR! ']) {
+    const c = N.readDeviceIdCell(v);
+    assert.strictEqual(c.problem, 'sheet error', v);
+    assert.strictEqual(c.id, null);
+    assert.strictEqual(c.raw, v.trim());
+  }
+  const r = row('6178', 330, null, { deviceIdProblem: 'sheet error', deviceIdRaw: '#REF!' });
+  assert.deepStrictEqual(keep(N.findDeviceIdProblems([r], new Map()).map((f) => f.reason)), ['spreadsheet error']);
+  assert.strictEqual(N.roomHeartbeat(r, new Map(), BUILT).bucket, 'never');
+});
+t('an error CELL in DeviceId survives the sheet reader (sheet_to_json would null it)', () => {
+  const XLSX = require('xlsx');
+  const ws = {
+    '!ref': 'A1:D4',
+    A1: { t: 's', v: '#Rooms to repair' }, B1: { t: 'n', v: 64 },
+    A2: { t: 's', v: 'Location' }, B2: { t: 's', v: 'Rooms' }, C2: { t: 's', v: 'DeviceId' }, D2: { t: 's', v: 'Status' },
+    A3: { t: 'n', v: 6178 }, B3: { t: 'n', v: 330 }, C3: { t: 'e', v: 0x17, w: '#REF!' }, D3: { t: 's', v: 'Ok' },
+    A4: { t: 'n', v: 6178 }, B4: { t: 'n', v: 331 }, C4: { t: 's', v: '' }, D4: { t: 's', v: 'Ok' },
+  };
+  assert.strictEqual(XLSX.utils.sheet_to_json(ws, { range: 1, defval: null, raw: true })[0].DeviceId, null, 'the trap is real');
+  const hdrs = ['Location', 'Rooms', 'DeviceId', 'Status', 'Action Item', 'Notes', 'Battery Status [x]', 'Calibration Risk'];
+  const full = { ...ws, '!ref': 'A1:H4' };
+  hdrs.slice(4).forEach((h, i) => { full[String.fromCharCode(69 + i) + '2'] = { t: 's', v: h }; });
+  const tab = N.readSheetTab(full, 'roomstatus', 1);
+  const { rows } = N.parseRoomstatusRows(tab.rows, tab.K);
+  assert.deepStrictEqual(keep(rows.map((r) => [r.room.display, r.deviceIdProblem, r.deviceIdRaw])), [
+    ['330', 'sheet error', '#REF!'],
+    ['331', null, null],
+  ]);
+  assert.strictEqual(rows[0].sheetRow, 3);
 });
 t('malformed values are kept for the finding and never joined', () => {
   for (const v of ['P2-0433', '0a10aced202194944a017d1', '0a10aced202194944a017d188', '0a10aced202194944a017dzz']) {
@@ -488,6 +520,11 @@ t('live-but-unmapped: held devices skipped, unattributable never listed or count
   assert.strictEqual(sum, r.rows.length);
   assert.strictEqual(r.stale, 2, 'old-6178 and never; the unattributable stale one is not counted');
   assert.ok(!r.rows.some((x) => x.deviceName === 'lab' || x.deviceName === 'lab-old'));
+  // A device placed by export Location still shows the groups it carries.
+  const p0519 = r.rows.find((x) => x.deviceName === 'P2-0519');
+  assert.strictEqual(p0519.group, null, 'no esa_ tag');
+  assert.deepStrictEqual(keep(p0519.groups), ['baseline_6_shelves_esa_wifi_spi']);
+  assert.strictEqual(r.rows.find((x) => x.deviceName === 'P2-0856').group, 'esa-6197');
 });
 t('unplaced telemetry lists rows no room holds, with attribution', () => {
   const { byId } = indexDevices([dev(1, 'held'), dev(2, 'P2-0117', ['esa-9502-non-spi']), dev(3, 'P2-0692', [])]);
@@ -588,6 +625,20 @@ t('durations, bad tokens, ambiguous text and host-built Dates are refused', () =
     assert.strictEqual(N.parseSheetDateTime(v), null, String(v));
   }
 });
+t('a number that is not a date serial reads as no timestamp, never a throw', () => {
+  for (const v of [1758822506, 1758822506000, 1e12, 0, -5, 2958466, Infinity, NaN]) {
+    let out;
+    assert.doesNotThrow(() => { out = N.parseSheetDateTime(v); }, String(v));
+    assert.strictEqual(out, null, String(v));
+  }
+  assert.strictEqual(iso(N.parseSheetDateTime(2958465)), '9999-12-31T06:00:00.000Z');
+});
+t('text dates that do not exist are refused, not rolled into the next month', () => {
+  for (const v of ['2026-02-31 10:00', '2026-09-31', '2026-04-31 00:00:00', '0050-01-01', '2026-00-10']) {
+    assert.strictEqual(N.parseSheetDateTime(v), null, v);
+  }
+  assert.strictEqual(iso(N.parseSheetDateTime('2028-02-29 12:00')), '2028-02-29T18:00:00.000Z');
+});
 t('the snapshot date is the Chicago calendar date', () => {
   // A 19:30 CDT export is 00:30Z the next day; it records as the day it was made.
   assert.strictEqual(keep(N.zonedDate('2026-09-26T00:30:00.000Z')), '2026-09-25');
@@ -657,6 +708,13 @@ t('garbage in, findings (or nothing) out', () => {
   assert.doesNotThrow(() => N.attributeDevice(null, null, LIVE));
   assert.doesNotThrow(() => N.findLiveButUnmapped([null, {}, dev(1, 'x', null)], new Set(), new Map(), PROPS, BUILT, 7));
   assert.doesNotThrow(() => N.findUnplacedTelemetry(null, [{}], new Set(), null, null, LIVE));
+  // groups that is not an array, as a malformed API page could deliver
+  const odd = { id: hex(5), name: 'odd', groups: 'esa_6197', last_heard: ago(0.1) };
+  const { byId } = indexDevices([odd]);
+  assert.doesNotThrow(() => N.findLocationTagConflicts([row('6197', 1, hex(5))], byId, LIVE));
+  assert.doesNotThrow(() => N.findUnplacedTelemetry([{ sheetRow: 2, deviceId: hex(5) }], [], new Set(), byId, new Map(), LIVE));
+  assert.doesNotThrow(() => N.findLiveButUnmapped([odd], new Set(), new Map(), PROPS, BUILT, 7));
+  assert.strictEqual(N.liveTagOf(odd, LIVE), null);
 });
 
 // ---------------------------------------------------------------------------

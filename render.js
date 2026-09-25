@@ -116,7 +116,7 @@ function assertSane(data) {
   }
   // The per-property "sheet export as of" replaces the per-row lastChecked
   // copy (D13). Null is allowed - the export may carry none for a property -
-  // but the key must be there, or the stamp silently vanishes from the page.
+  // but the key must be there: it is the stamp D5 puts on each card.
   for (const p of data.properties) {
     if (!p.snapshot || !('currentTime' in p.snapshot)) {
       problems.push(`${p.code}: snapshot carries no currentTime key`);

@@ -263,13 +263,16 @@ function particleGroupCode(device) {
   return null;
 }
 
+/** A device's Particle groups as strings; anything but an array reads as none. */
+const groupsOf = (device) => (device && Array.isArray(device.groups) ? device.groups.map(String) : []);
+
 /**
  * First esa_#### / esa-#### group naming a LIVE property. The regex is
  * anchored, so "baseline_6_shelves_esa_wifi_spi" is not a tag; a tag for a
  * property this dashboard does not render (esa_9829) is not a live tag.
  */
 function liveTagOf(device, liveCodes) {
-  for (const g of (device && device.groups) || []) {
+  for (const g of groupsOf(device)) {
     const m = /^esa[-_](\d{4})/i.exec(String(g));
     if (m && liveCodes.has(m[1])) return { code: m[1], group: String(g) };
   }
@@ -338,10 +341,17 @@ function zonedWallClockToUtc(wall, timeZone) {
   return valid.length ? Math.min(...valid) : naive - before;
 }
 
+// Serials for 1900-01-01 .. 9999-12-31. A number outside that is not a date
+// cell (an epoch written as a number, say) and reads as no timestamp.
+const SERIAL_MIN = 1;
+const SERIAL_MAX = 2958465;
+
 /** Excel serial -> wall-clock fields. Pure arithmetic in a UTC frame. */
 function serialToWallClock(serial) {
   if (typeof serial !== 'number' || !Number.isFinite(serial)) return null;
+  if (serial < SERIAL_MIN || serial > SERIAL_MAX) return null;
   const d = new Date(Math.round((serial - EXCEL_EPOCH_DAYS) * DAY_MS));
+  if (isNaN(d)) return null;
   return {
     y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, d: d.getUTCDate(),
     h: d.getUTCHours(), mi: d.getUTCMinutes(), s: d.getUTCSeconds(), ms: d.getUTCMilliseconds(),
@@ -375,7 +385,11 @@ function parseSheetDateTime(v, timeZone = SHEET_TIME_ZONE) {
     y: +m[1], mo: +m[2], d: +m[3], h: +(m[4] || 0), mi: +(m[5] || 0), s: +(m[6] || 0),
     ms: m[7] ? +m[7].slice(0, 3).padEnd(3, '0') : 0,
   };
-  if (wall.mo < 1 || wall.mo > 12 || wall.d < 1 || wall.d > 31 || wall.h > 23 || wall.mi > 59 || wall.s > 59) return null;
+  if (wall.y < 1900 || wall.h > 23 || wall.mi > 59 || wall.s > 59) return null;
+  // Date.UTC rolls 2026-02-31 into March; a date that does not survive the
+  // round trip was never a real date.
+  const check = new Date(Date.UTC(wall.y, wall.mo - 1, wall.d));
+  if (check.getUTCFullYear() !== wall.y || check.getUTCMonth() !== wall.mo - 1 || check.getUTCDate() !== wall.d) return null;
   if (m[8]) {
     const z = m[8].toUpperCase();
     const off = z === 'Z' ? 0 : (z[0] === '-' ? -1 : 1) * (+z.slice(1, 3) * 60 + +z.slice(-2)) * 60000;
@@ -417,14 +431,20 @@ function locationCode(v) {
 
 const DEVICE_ID_RE = /^[0-9a-f]{24}$/i;
 
+// Spreadsheet error values. In DeviceId they mean the lookup formula broke,
+// which is not the same statement as "no device" and must not read as one.
+const SHEET_ERROR_RE = /^#(?:n\/a|value!|ref!|div\/0!|name\?|null!|num!|error!|spill!|calc!|getting_data)$/i;
+
 /**
  * One roomstatus DeviceId cell. Blank - including the "" a lookup formula
  * returns when heartbeatstatus has no row for the room - means no device.
  * Anything else must be a 24-hex Particle id; ids are hex, so case is
- * normalised. A value that is not an id is kept for the finding (F3) and
- * never joined on.
+ * normalised. A value that is not an id - a spreadsheet error included - is
+ * kept for the finding (F3) and never joined on.
  */
 function readDeviceIdCell(v) {
+  const text = v === null || v === undefined ? '' : String(v).trim();
+  if (SHEET_ERROR_RE.test(text)) return { id: null, raw: text, problem: 'sheet error' };
   const s = normStr(v);
   if (!s) return { id: null, raw: null, problem: null };
   if (!DEVICE_ID_RE.test(s)) return { id: null, raw: s, problem: 'malformed' };
@@ -445,6 +465,40 @@ const sheetRowOf = (r, fallback) => (Number.isInteger(r.__rowNum__) ? r.__rowNum
 
 /** A header matched by pattern, never by exact string: several carry a date suffix or a trailing space. */
 const headerKey = (headers, re) => headers.find((h) => re.test(String(h).trim())) || null;
+
+/**
+ * sheet_to_json turns an error cell (#REF!, #VALUE!) into null, so a broken
+ * lookup would read as a blank. Put the error text back in one column.
+ */
+function restoreErrorCells(ws, rows, headerRow, header) {
+  if (!ws || !ws['!ref'] || !header) return;
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  let col = -1;
+  for (let c = range.s.c; c <= range.e.c && col < 0; c++) {
+    const cell = ws[XLSX.utils.encode_cell({ r: headerRow, c })];
+    if (cell && String(cell.v) === header) col = c;
+  }
+  if (col < 0) return;
+  for (const r of rows) {
+    if (!Number.isInteger(r.__rowNum__)) continue;
+    const cell = ws[XLSX.utils.encode_cell({ r: r.__rowNum__, c: col })];
+    if (cell && cell.t === 'e') r[header] = cell.w || '#ERROR!';
+  }
+}
+
+/**
+ * One tab: its header row checked (fatal when a required header is missing),
+ * then its data rows. For roomstatus, DeviceId keeps any error text.
+ */
+function readSheetTab(ws, name, headerRow) {
+  const headers = (XLSX.utils.sheet_to_json(ws, { header: 1, range: headerRow, defval: null, raw: true })[0] || [])
+    .filter((h) => h !== null)
+    .map(String);
+  const K = requireHeaders(name, headers);
+  const rows = XLSX.utils.sheet_to_json(ws, { range: headerRow, defval: null, raw: true });
+  if (name === 'roomstatus') restoreErrorCells(ws, rows, headerRow, K.deviceId);
+  return { K, rows };
+}
 
 /**
  * Required headers, per tab. A missing one is structural and fails the build.
@@ -750,7 +804,7 @@ function findLocationTagConflicts(rows, devicesById, liveCodes) {
     const tag = liveTagOf(d, liveCodes);
     if (!tag) {
       c.untagged++;
-      if ((d.groups || []).some((g) => /^baseline_/i.test(String(g)))) c.untaggedBaseline++;
+      if (groupsOf(d).some((g) => /^baseline_/i.test(g))) c.untaggedBaseline++;
       continue;
     }
     c.checkable++;
@@ -777,7 +831,8 @@ function findDeviceIdProblems(rows, devicesById) {
   for (const r of rows || []) {
     if (!r) continue;
     if (r.deviceIdProblem) {
-      out.push({ flag: 'F3', property: r.property, room: roomOf(r), reason: 'not a device id', value: r.deviceIdRaw });
+      const reason = r.deviceIdProblem === 'sheet error' ? 'spreadsheet error' : 'not a device id';
+      out.push({ flag: 'F3', property: r.property, room: roomOf(r), reason, value: r.deviceIdRaw });
     } else if (r.deviceId && !(devicesById && devicesById.has(r.deviceId))) {
       out.push({ flag: 'F3', property: r.property, room: roomOf(r), reason: 'unknown to Particle', value: r.deviceId });
     }
@@ -902,7 +957,11 @@ function findLiveButUnmapped(devices, heldIds, locationsById, properties, builtA
       deviceName: d.name || null,
       deviceId: d.id,
       deviceIdShort: shortId(d.id),
-      group: (liveTagOf(d, liveCodes) || particleGroupCode(d) || {}).group || null,
+      // The esa_ group the page has always shown; null when there is none.
+      group: who.group || groupsOf(d).find((g) => /^esa[-_]\d{4}/i.test(g)) || null,
+      // Every Particle group, so a device placed by export Location still
+      // shows what it carries (baseline_* at 9502, typically).
+      groups: groupsOf(d),
       attribution: who.via,
       lastHeard: d.last_heard || null,
       ageDays: round(age, 1),
@@ -929,7 +988,7 @@ function findUnplacedTelemetry(batRows, hbRows, heldIds, devicesById, locationsB
       deviceId: row.deviceId,
       deviceIdShort: shortId(row.deviceId),
       deviceName: d && d.name ? String(d.name) : null,
-      groups: d ? (d.groups || []).map(String) : [],
+      groups: groupsOf(d),
       location: row.location || null,
       attribution: d ? attributeDevice(d, locationsById, liveCodes) : null,
       lastHeard: d ? d.last_heard || null : null,
@@ -1383,19 +1442,11 @@ const SOURCE_KEY = 'consolidated';
  */
 function readConsolidated() {
   const wb = readWorkbook(SOURCE_KEY, SOURCE_TABS, { cellDates: false });
-  const tab = (name, headerRow) => {
-    const ws = wb.Sheets[name];
-    const headers = (XLSX.utils.sheet_to_json(ws, { header: 1, range: headerRow, defval: null, raw: true })[0] || [])
-      .filter((h) => h !== null)
-      .map(String);
-    const K = requireHeaders(name, headers);
-    return { K, rows: XLSX.utils.sheet_to_json(ws, { range: headerRow, defval: null, raw: true }) };
-  };
   // roomstatus row 1 is a counter formula, not a header, and is never read.
   // Its header is row 2 (range: 1). The other tabs have theirs on row 1.
-  const rs = tab('roomstatus', 1);
-  const bs = tab('batterystatus', 0);
-  const hs = tab('heartbeatstatus', 0);
+  const rs = readSheetTab(wb.Sheets.roomstatus, 'roomstatus', 1);
+  const bs = readSheetTab(wb.Sheets.batterystatus, 'batterystatus', 0);
+  const hs = readSheetTab(wb.Sheets.heartbeatstatus, 'heartbeatstatus', 0);
   return {
     rooms: parseRoomstatusRows(rs.rows, rs.K),
     battery: parseBatteryRows(bs.rows, bs.K),
@@ -1767,7 +1818,7 @@ function report(data) {
   console.log(`  live but unmapped (<=${q.liveWindowDays}d): ${q.unmappedLive}  = sum of properties ${JSON.stringify(q.unmappedLiveByGroup)}`);
   for (const u of lum) {
     console.log(
-      `    ${pad(u.property, 6)}${pad(u.deviceName || '-', 10)}...${pad(u.deviceIdShort, 8)}${pad(u.group || '(no group)', 34)}` +
+      `    ${pad(u.property, 6)}${pad(u.deviceName || '-', 10)}...${pad(u.deviceIdShort, 8)}${pad((u.groups || []).join('+') || '(no groups)', 34)}` +
         `${pad(u.attribution === 'tag' ? 'by tag' : 'by export Location', 20)}${u.ageDays}d`
     );
   }
@@ -1917,7 +1968,7 @@ function dailyRecord(data) {
 // The rest of the second line is exported for test-cutover.js.
 module.exports = {
   normalize, report, dailyRecord, OUT_FILE, planRoomOverrideMerge, resolveRoomOverride,
-  locationCode, readDeviceIdCell, requireHeaders, parseRoomstatusRows, parseBatteryRows, parseHeartbeatRows,
+  locationCode, readDeviceIdCell, requireHeaders, readSheetTab, parseRoomstatusRows, parseBatteryRows, parseHeartbeatRows,
   partitionRoomRows, batteryIndex, heartbeatIndex, roomHeartbeat, NO_DEVICE_BUCKET,
   serialToWallClock, zonedWallClockToUtc, parseSheetDateTime, zonedDate,
   findDuplicateDevices, findLocationTagConflicts, findDeviceIdProblems, parseReplacementNote, resolveNamedUnit,
