@@ -2,7 +2,8 @@
 
 **Block 1 of 5.** Written 2026-09-25 against `c561bd5` in a read-only session. It was refreshed the same
 day against Priya's 11:48 CDT re-export, and Ian's decisions were recorded in §9. The decisions for Block 2
-(D5b, D6, D8, D10, D11, D13, D14, D15, D16) were recorded in §9 on the `cutover` branch the same day.
+(D5b, D6, D8, D10, D11, D13, D14, D15, D16) were recorded in §9 on the `cutover` branch the same day, and so
+were the decisions for Block 3 (H1, H2, D7, D12 and the two Block 2 leftovers).
 
 This is the contract Blocks 2–5 implement. For background, see
 [`docs/CONSOLIDATION-FINDINGS.md`](docs/CONSOLIDATION-FINDINGS.md) (the Sep 8–9 investigation).
@@ -110,7 +111,7 @@ Where the two disagree, this document wins, because the sheet has moved since th
 |---|---|
 | `Location` (both tabs) | A **number** in all 319 `roomstatus` rows and all 282 `heartbeatstatus` rows. Convert it to a 4-digit **string** code before comparing with `PROPERTIES[].code`. A number-to-string compare fails silently: in `roomstatus` it yields zero rows (the zero-rows FAIL catches that); in `heartbeatstatus` it empties every Location attribution (§6) and every per-property `CurrentTime` (§7), and nothing catches it. A `roomstatus` row whose code is outside the three is excluded and never counted (0 today). **Decided (D15):** it is dropped and logged, not listed. |
 | `Rooms` | Normalize with `normRoom` (`102.0`→`"102"`; letter suffixes kept); the key is lowercased. A duplicate (property, room) keeps every row and raises the existing duplicate note (0 today). |
-| `DeviceId` | `normStr`, valid only if it matches `/^[0-9a-f]{24}$/i`. Blank means no device: 15 cells are formulas returning `""` and 2 are absent. A non-blank value that is not 24-hex, or not known to Particle, is **flagged F3 and bucketed `never`**. It never fails the build (0 today). **Contradiction (Block 2):** the implementation reads the `normStr` placeholder tokens (`NA`, `n/a`, `No device`, `-`, `--`, `null`) as blank, i.e. *no device*, not as F3. Spreadsheet errors (`#REF!`, `#VALUE!`, `#N/A` and kin) are F3, bucket `never`. 0 cells today. Open for Ian: keep, or make every typed non-id F3. |
+| `DeviceId` | `normStr`, valid only if it matches `/^[0-9a-f]{24}$/i`. Blank means no device: 15 cells are formulas returning `""` and 2 are absent. A non-blank value that is not 24-hex, or not known to Particle, is **flagged F3 and bucketed `never`**. It never fails the build (0 today). **Contradiction (Block 2):** the implementation reads the `normStr` placeholder tokens (`NA`, `n/a`, `No device`, `-`, `--`, `null`) as blank, i.e. *no device*, not as F3. Spreadsheet errors (`#REF!`, `#VALUE!`, `#N/A` and kin) are F3, bucket `never`. 0 cells today. **Decided (Block 3): keep.** A typed placeholder means no device; any other non-id text, or a spreadsheet error, is F3 (§9). |
 | `Status` | `normStr(...) \|\| 'Unknown'`. Triage is Issue + Check. |
 | `Action Item` | `actionType()`. The literal `None` means no action (256 rows). |
 | Battery voltage | `normNum` of the `/^battery status/i` column, then `batteryClass()` with the confirmed thresholds, unchanged. |
@@ -154,7 +155,7 @@ Where the two disagree, this document wins, because the sheet has moved since th
 | room → device | `roomstatus.DeviceId` | Nothing else. No fallback. |
 | device → liveness | Particle `id` | `last_heard` against build time: <2 d fresh, 2–7 aging, >7 stale, else never. **Decided (D11):** report *no device* (blank DeviceId) separately from *never*. |
 | device → battery age | `batterystatus.ParticleDeviceId` | Never by `RoomNumber`. |
-| device → attribution (unmapped only) | A live `esa_####` / `esa-####` group via `particleGroupCode`; else `heartbeatstatus.Location` by id. **Contradiction (Block 2):** the implementation takes the first `esa_` group that names a *live* property (`liveTagOf`); `particleGroupCode` takes the first `esa_` group of *any* property. They differ only for a device with two or more `esa_` groups: 0 of 879 today. F2 uses the same rule. | Keep the anchored regex: `baseline_6_shelves_esa_wifi_spi` must not match. **A Location-attributed device is labelled "attributed by export Location" on Reconciliation (D2, decided).** **Decided (D5b):** an untagged device with more than one `heartbeatstatus.Location` is unattributable. |
+| device → attribution (unmapped only) | A live `esa_####` / `esa-####` group via `particleGroupCode`; else `heartbeatstatus.Location` by id. **Contradiction (Block 2):** the implementation takes the first `esa_` group that names a *live* property (`liveTagOf`); `particleGroupCode` takes the first `esa_` group of *any* property. They differ only for a device with two or more `esa_` groups: 0 of 879 today. F2 uses the same rule. **Decided (Block 3):** the first live-property group attributes; a device carrying groups for two *different* live properties is unattributable (as D5b) and logged. | Keep the anchored regex: `baseline_6_shelves_esa_wifi_spi` must not match. **A Location-attributed device is labelled "attributed by export Location" on Reconciliation (D2, decided).** **Decided (D5b):** an untagged device with more than one `heartbeatstatus.Location` is unattributable. |
 | device → display name | **D8, decided: Particle name by id** | Not the `Device# ` text, which is never read. They differ on 3 rows: 6178/418 (`P2-0823` vs Particle `P-0823`), and 6197/226 and 6197/237 (sheet `P-`, Particle `P2-`). **`Device# ` must never be resolved to an id**; that is exactly what caused the §0 outage. |
 
 ---
@@ -253,7 +254,7 @@ P2-0891 left this list when the Sep 25 export put it in 6197/103.
 - **`history/` is a record, and is never rewritten or backfilled.** The days 2026-09-16 → 09-24 have no file.
 - The interim override fix (§0) resumes daily records **with legacy values**. The first record carrying consolidated values comes later, at the cutover.
 
-**The gaps will not look like gaps (H1, pending)**
+**The gaps will not look like gaps (H1: approved, fixed in Block 3 — trend x is the calendar date, see §9)**
 - Trend x is the record's *index* in the window, not its date (`template.html:883`). The last record before a gap is therefore drawn beside the first record after it.
 - The comment at `:860` ("a gap occupies its real horizontal width") holds only for a field missing from a record, not for a missing day.
 - `render.js:57` ships the last 30 *records*, not 30 days.
@@ -261,7 +262,7 @@ P2-0891 left this list when the Sep 25 export put it in 6197/103.
 
 **The gap rule is unchanged.** A field absent from a record is a gap, never a zero. The daily-record shape does not change.
 
-**Where markers are drawn (H2, open)**
+**Where markers are drawn (H2: approved, fixed in Block 3 — each annotation declares its charts, see §9)**
 - Only the fleet Triage-rows chart draws markers (`annotate: true` at `template.html:1116`).
 - The fleet "Live, awaiting room mapping" chart (`:1121-1122`) and every per-property chart (`:984-988`; policy at `config.js:220-224`) have none, and there is no fleet Ok series.
 - So the fleet unmapped step and 6178's Ok step (13 → 105) both draw unannotated.
@@ -309,7 +310,7 @@ P2-0891 left this list when the Sep 25 export put it in 6197/103.
 | **D4** | **FIX IN BLOCK 2.** Parse sheet datetimes as America/Chicago, DST-aware, with no new dependency. Verify each timestamp column against Particle wherever the same event exists, and do not assume one zone for the whole workbook (the shower formula subtracts `5/24`). |
 | **D5** | **Export stamp:** a per-property "sheet export as of" on each card; the header shows the oldest. **Guard checks become validators that return findings.** Nothing ported from `resolveRoomOverride` may throw. |
 | **D9** | **The Ok-but-stale/no-device rooms** (54 as of the Sep 25 export) are surfaced as a **Reconciliation list in Block 4**. Status is never overridden. |
-| **H1** | **PENDING.** Plotting trend x by record index is a scope change, for Ian to decide before Block 3. |
+| **H1** | **APPROVED for Block 3** (see the Block 3 table below). Plotting trend x by record index was a scope change, for Ian to decide before Block 3. |
 
 **Decided by Ian for Block 2, 2026-09-25** (implemented on the `cutover` branch)
 
@@ -327,14 +328,16 @@ P2-0891 left this list when the Sep 25 export put it in 6197/103.
 | **D11 bars** | **The card's heartbeat bars draw a "No device" bucket in Block 2** (config `heartbeatAge.noDeviceBucket`, neutral tone). The D11 split had made every card's bars drop its no-device rooms, which is breakage rather than new UI. Every card's bars sum to its room count. The rest of D11's display waits for Block 3. |
 | **No room number** | **A row with a configured Location but a blank room number is dropped and logged, like D15, and is never fatal.** D16 guards the partition, not room identity, and a half-typed row must not take the site down. Its count is reported beside the D15 count (0 today). |
 
-**Pending for Block 3** (not implemented in Block 2)
+**Decided by Ian for Block 3, 2026-09-25** (implemented on the `cutover` branch)
 
-| # | finding | options | recommendation |
-|---|---|---|---|
-| **D7** | `render.js:151` fails the build on "The Lab" / "Fort Custer" / "ESA 9829" anywhere in the payload. Free-text notes now reach the page (0 hits today). | Keep it fatal / fatal on structured fields and a finding on free text | **A finding on free text** |
-| **D12** | The F2 blind spot (§5) | Show / omit | **Show** |
-| **H1** | See above | — | — |
-| **H2** | Clerical steps are unmarked outside the fleet Triage chart (§8) | Extend `annotate` / accept | **Extend** it to the fleet unmapped chart and the property charts |
+| # | decision |
+|---|---|
+| **H1** | ⚠️ **APPROVED.** Trend x is the **calendar date**. The window is the last 30 *days*, not the last 30 records. A day with no record is a gap: the gap rule now covers missing days as well as missing fields. Labels say days. |
+| **H2** | ⚠️ **APPROVED.** Each `TRENDS` annotation declares the charts it applies to: `fleet`, a property code, or `all`. The four existing entries take the scope their comments describe; the cutover entry applies to every chart. |
+| **D7** | **The banned-name scan stays fatal on structured fields.** A match inside free-text notes is a logged finding, and the note still renders. Log-only findings (D10 unplaced telemetry, D15 out-of-scope rows, blank-room rows) leave the page payload entirely: they live in `data/normalized.json` and the build log only. |
+| **D12** | **Show F2's coverage beside its count** (as of the Sep 25 export: 6197 93.4 % · 6178 86.3 % · 9502 32.1 %). |
+| **Leftover: DeviceId placeholders** | A typed `DeviceId` that is a `BAD_TOKENS` placeholder ("NA", "No device", …) means **no device**. Any other non-id text, or a spreadsheet error, is **F3**. (The Block 2 implementation already does this; 0 cases today.) |
+| **Leftover: two live tags** | Attribution uses the **first** live-property `esa_` group. A device carrying groups for two **different** live properties is **unattributable** (as D5b) and logged. F2 cannot check it either. 0 cases today. |
 
 ---
 
