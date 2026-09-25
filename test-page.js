@@ -305,6 +305,252 @@ t('a dropped out-of-scope row mentioning The Lab is logged, not fatal, and absen
   assert.ok(!JSON.stringify(p).includes('The Lab'));
 });
 
+// ===========================================================================
+// The page script, run in memory
+// ===========================================================================
+
+/**
+ * Run template.html's page script against a payload, with just enough DOM for
+ * it to draw: elements by id that hold innerHTML/textContent/value/hidden and
+ * their listeners. What the page drew is then read back as strings. A throw
+ * anywhere in the page script fails the test that ran it.
+ */
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+const PAGE_SCRIPT = (() => {
+  const html = fs.readFileSync(path.join(__dirname, 'template.html'), 'utf8');
+  const m = html.match(/<script>([\s\S]*?)<\/script>/);
+  if (!m) throw new Error('template.html has no inline page script');
+  return m[1];
+})();
+
+function runPage(payload, search = '') {
+  const els = new Map();
+  const blobs = [];
+  const mk = (id, tag) => {
+    const e = {
+      id, tagName: tag || 'div', innerHTML: '', textContent: '', value: '', hidden: false, children: [],
+      dataset: {}, attrs: {}, listeners: {},
+      appendChild(c) { this.children.push(c); return c; },
+      removeChild() {},
+      addEventListener(ev, fn) { (this.listeners[ev] = this.listeners[ev] || []).push(fn); },
+      setAttribute(k, v) { this.attrs[k] = String(v); },
+      getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+      removeAttribute(k) { delete this.attrs[k]; },
+      click() { for (const fn of this.listeners.click || []) fn({ preventDefault() {} }); },
+      fire(ev) { for (const fn of this.listeners[ev] || []) fn({ preventDefault() {} }); },
+    };
+    return e;
+  };
+  const byId = (id) => {
+    if (!els.has(id)) els.set(id, mk(id));
+    return els.get(id);
+  };
+  byId('payload').textContent = JSON.stringify(payload);
+  const tabs = ['rollup', 'rooms', 'recon'].map((v) => Object.assign(mk(null, 'button'), { dataset: { view: v } }));
+  const docListeners = [];
+  const document = {
+    getElementById: byId,
+    createElement: (tag) => mk(null, tag),
+    querySelectorAll: (sel) => (sel === '#tabs button' ? tabs : []),
+    addEventListener: (ev, fn) => docListeners.push([ev, fn]),
+    body: { appendChild() {}, removeChild() {} },
+  };
+  class FakeBlob {
+    constructor(parts) { blobs.push(parts.join('')); }
+  }
+  const ctx = {
+    document,
+    location: { search, hash: '', pathname: '/' },
+    history: { replaceState() {} },
+    URLSearchParams,
+    Blob: FakeBlob,
+    URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
+    console,
+  };
+  vm.runInNewContext(PAGE_SCRIPT, ctx, { filename: 'template.html' });
+  return {
+    html: (id) => byId(id).innerHTML,
+    text: (id) => byId(id).textContent,
+    el: byId,
+    csv() {
+      byId('fCsv').click();
+      return blobs[blobs.length - 1].replace(/^﻿/, '');
+    },
+    // A link the page drew with data-goto, followed as a click would.
+    goto(attrs) {
+      const target = { getAttribute: (k) => (k in attrs ? attrs[k] : null) };
+      for (const [ev, fn] of docListeners) {
+        if (ev === 'click') fn({ target: { closest: () => target }, preventDefault() {} });
+      }
+    },
+  };
+}
+const rowsOf = (html) => (html.match(/<tr>[\s\S]*?<\/tr>/g) || []);
+const titlesOf = (html, cls) => [...html.matchAll(new RegExp('<span class="' + cls + '[^"]*" title="([^"]*)"', 'g'))].map((m) => m[1]);
+const unesc = (s) => s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+
+// ===========================================================================
+console.log('\nPAGE: stamps (D5, §7)');
+
+t('the page script runs on the fixture without throwing', () => {
+  assert.doesNotThrow(() => runPage(payloadOf(fixture())));
+});
+t('the header carries all three stamps; sheet export is the oldest property stamp', () => {
+  const p = payloadOf(fixture());
+  const page = runPage(p);
+  const fmt = (iso) => new Date(iso).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  assert.strictEqual(page.text('sheetAsOf'), fmt('2026-09-25T16:48:26.425Z'));
+  assert.strictEqual(page.text('hbAsOf'), fmt(BUILT));
+  assert.strictEqual(page.text('builtAt'), fmt(BUILT));
+});
+t('a payload with no export stamp says unknown rather than blank', () => {
+  const d = fixture();
+  d.sheetExportAsOf = null;
+  d.properties[2].snapshot.currentTime = null;
+  const page = runPage(payloadOf(d));
+  assert.strictEqual(page.text('sheetAsOf'), 'unknown');
+  const cards = page.html('cards').split('<div class="card">').slice(1);
+  assert.ok(/Sheet export as of[^<]*<b>unknown<\/b>/.test(cards[2]), cards[2].slice(0, 400));
+});
+t('each property card shows its own sheet export stamp; the battery badge stays', () => {
+  const page = runPage(payloadOf(fixture()));
+  const cards = page.html('cards').split('<div class="card">').slice(1);
+  assert.strictEqual(cards.length, 3);
+  const fmt = (iso) => new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  assert.ok(cards[2].includes('Sheet export as of <b>' + fmt('2026-09-25T16:48:36.928Z') + '</b>'), cards[2].slice(0, 600));
+  for (const c of cards) assert.ok(c.includes('<div class="fl">Battery data</div>'));
+});
+
+// ===========================================================================
+console.log('\nPAGE: no device is its own state (D11)');
+
+t('card KPIs split never-heard from no device, and the three sum to the rooms', () => {
+  const page = runPage(payloadOf(fixture()));
+  const card = page.html('cards').split('<div class="card">')[1];
+  const kpi = (label) => Number((card.match(new RegExp('<div class="v"[^>]*>(\\d+)</div><div class="l">' + label + '</div>')) || [])[1]);
+  assert.deepStrictEqual(keep([kpi('Rooms'), kpi('Reporting'), kpi('Never heard'), kpi('No device')]), [3, 2, 0, 1]);
+  assert.ok(!/<div class="l">Silent<\/div>/.test(card), 'no "Silent" KPI lumping the two together');
+});
+t('All rooms: a no-device room reads "No device", not a dash, and can be filtered', () => {
+  const page = runPage(payloadOf(fixture()), '?v=rooms&hb=noDevice');
+  const rows = rowsOf(page.html('tableBody'));
+  assert.strictEqual(keep(rows.length), 1);
+  assert.ok(/data-label="Days silent"[^>]*><span class="muted">No device<\/span>/.test(rows[0]), rows[0]);
+  assert.strictEqual(page.text('rowCount'), '1 of 6 rooms');
+});
+t('the heartbeat filter offers every drawn bucket, with counts', () => {
+  const page = runPage(payloadOf(fixture()), '?v=rooms');
+  const opts = [...page.html('fHeartbeat').matchAll(/<option value="([^"]*)">([^<]*)<\/option>/g)].map((m) => [m[1], unesc(m[2])]);
+  assert.deepStrictEqual(keep(opts), [
+    ['', 'All (6)'], ['fresh', '< 2 days (4)'], ['aging', '2-7 days (0)'], ['stale', '> 7 days (1)'],
+    ['never', 'Never (0)'], ['noDevice', 'No device (1)'],
+  ]);
+});
+
+// ===========================================================================
+console.log('\nPAGE: per-room findings (F1-F4)');
+
+t('flagged rooms carry a tag per finding, with the plain-language tooltip', () => {
+  const page = runPage(payloadOf(fixture()), '?v=rooms');
+  const tips = titlesOf(page.html('tableBody'), 'flag').map(unesc);
+  assert.deepStrictEqual(keep(tips), ['F4 · note names P2-0556; DeviceId shows P2-0101']);
+});
+t('the unnamed replacement note is tagged F4 but drawn apart', () => {
+  const d = fixture();
+  d.properties[1].rooms[1].flags = [{ code: 'F4', unnamed: true, text: 'note records a replacement but names no unit; DeviceId is blank' }];
+  const page = runPage(payloadOf(d), '?v=rooms&flag=F4');
+  const body = page.html('tableBody');
+  assert.strictEqual(rowsOf(body).length, 2, 'the F4 filter keeps the room');
+  assert.ok(/<span class="flag unnamed"/.test(body));
+});
+t('the finding filter narrows to flagged rooms and offers counts', () => {
+  const d = fixture();
+  d.properties[1].rooms[1].flags = [{ code: 'F1', text: 'P2-0433 is also listed in 9502/308, another property' }];
+  d.properties[2].rooms[0].flags = [
+    { code: 'F1', text: 'P2-0433 is also listed in 6178/428, another property' },
+    { code: 'F2', text: 'P2-0433 is tagged esa_6178 in Particle, which belongs to 6178' },
+  ];
+  const any = runPage(payloadOf(d), '?v=rooms&flag=any');
+  assert.strictEqual(rowsOf(any.html('tableBody')).length, 3);
+  const f2 = runPage(payloadOf(d), '?v=rooms&flag=F2');
+  assert.strictEqual(rowsOf(f2.html('tableBody')).length, 1);
+  const opts = [...any.html('fFlag').matchAll(/<option value="([^"]*)">([^<]*)<\/option>/g)].map((m) => m[1] + '=' + m[2]);
+  assert.deepStrictEqual(keep(opts), [
+    '=All rooms (6)', 'any=Any finding (3)', 'F1=F1 · one device, two rooms (2)', 'F2=F2 · Location vs Particle tag (1)',
+    'F3=F3 · DeviceId not usable (0)', 'F4=F4 · note vs DeviceId (1)',
+  ]);
+});
+t('search finds a room by the words in its flags', () => {
+  const page = runPage(payloadOf(fixture()), '?v=rooms&q=' + encodeURIComponent('names P2-0556'));
+  assert.strictEqual(rowsOf(page.html('tableBody')).length, 1);
+});
+t('the CSV carries heartbeat state and findings, exactly what is on screen', () => {
+  const page = runPage(payloadOf(fixture()), '?v=rooms');
+  const lines = page.csv().split('\r\n');
+  const head = lines[0].split(',');
+  assert.ok(head.includes('Heartbeat') && head.includes('Findings'), lines[0]);
+  const col = (line, name) => {
+    // Enough CSV for this fixture: no field here holds an embedded comma except quoted ones.
+    const cells = line.match(/("([^"]|"")*"|[^,]*)(,|$)/g).map((c) => c.replace(/,$/, '').replace(/^"|"$/g, '').replace(/""/g, '"'));
+    return cells[head.indexOf(name)];
+  };
+  const byRoom = (p, rm) => lines.find((l) => l.startsWith(p + ',') && col(l, 'Room') === rm);
+  assert.strictEqual(col(byRoom('6197', '103'), 'Heartbeat'), 'No device');
+  assert.strictEqual(col(byRoom('6197', '101'), 'Heartbeat'), '< 2 days');
+  assert.strictEqual(keep(col(byRoom('6178', '101'), 'Findings')), 'F4: note names P2-0556; DeviceId shows P2-0101');
+  assert.strictEqual(lines.length, 1 + 6);
+});
+
+// ===========================================================================
+console.log('\nPAGE: Reconciliation');
+
+t('a findings summary gives F1-F4 counts, F2 with its coverage (D12)', () => {
+  const d = fixture();
+  d.findings.f2Coverage = {
+    6197: { deviceRows: 91, checkable: 85, pctCheckable: 93.4 },
+    6178: { deviceRows: 102, checkable: 88, pctCheckable: 86.3 },
+    9502: { deviceRows: 109, checkable: 35, pctCheckable: 32.1 },
+  };
+  d.findings.f4Unnamed = [{ flag: 'F4', property: '6178', room: '302', sheetRow: 20, kind: 'unnamed', deviceId: null }];
+  const page = runPage(payloadOf(d));
+  const s = page.html('reconFindings');
+  const count = (code) => Number((s.match(new RegExp('<td[^>]*data-label="Flag"><b>' + code + '</b></td>[\\s\\S]*?data-label="Count"><b>(\\d+)</b>')) || [])[1]);
+  assert.deepStrictEqual(keep(['F1', 'F2', 'F3', 'F4'].map(count)), [1, 0, 0, 1]);
+  assert.ok(s.includes('6197 93.4&nbsp;% &middot; 6178 86.3&nbsp;% &middot; 9502 32.1&nbsp;%'), s);
+  assert.ok(/\+1 note records a replacement without naming the unit/.test(s), s);
+});
+t('each finding count links to All rooms filtered to that finding', () => {
+  const page = runPage(payloadOf(fixture()));
+  assert.ok(/data-goto="rooms" data-flag="F4"/.test(page.html('reconFindings')));
+  page.goto({ 'data-goto': 'rooms', 'data-flag': 'F4' });
+  assert.strictEqual(rowsOf(page.html('tableBody')).length, 1);
+  assert.strictEqual(page.el('fFlag').value, 'F4');
+});
+t('live-but-unmapped rows say how they were attributed (D2)', () => {
+  const d = fixture();
+  d.reconciliation.liveButUnmapped.push({
+    property: '9502', propertyName: NAMES[9502], deviceName: 'P2-0032', deviceId: hex(32), deviceIdShort: '000032',
+    group: null, groups: ['baseline_6_shelves'], attribution: 'exportLocation', lastHeard: BUILT, ageDays: 0.4,
+  });
+  d.particle.unmappedLive = 2;
+  d.particle.unmappedLiveByGroup = { 6197: 1, 9502: 1 };
+  const page = runPage(payloadOf(d));
+  const how = [...page.html('reconBlocks').matchAll(/data-label="Attributed by">([^<]*)</g)].map((m) => m[1]);
+  assert.deepStrictEqual(keep(how), ['tag esa-6197', 'attributed by export Location']);
+  assert.ok(!/unattributed/.test(page.html('reconBlocks')));
+});
+t('the fleet strip no longer explains an untagged pool', () => {
+  const hist = [
+    { date: '2026-09-24', triageRows: 60, unmappedLive: 73, properties: {} },
+    { date: '2026-09-25', triageRows: 62, unmappedLive: 73, properties: {} },
+  ];
+  const page = runPage(payloadOf(fixture(), hist));
+  assert.ok(!/property group tag at all/.test(page.html('fleetStrip')));
+  assert.ok(!/fleetnote/.test(page.html('fleetStrip')));
+});
+
 // ---------------------------------------------------------------------------
 console.log('\n' + (fail ? 'FAILED ' : 'ALL PASS ') + pass + ' passed, ' + fail + ' failed');
 // Evidence the zone really changed: the host offset at the export instant.

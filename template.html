@@ -153,6 +153,15 @@
     display: inline-block; font-size: 11px; font-weight: 600;
     padding: 1px 7px; border-radius: 999px; border: 1px solid transparent; white-space: nowrap;
   }
+  /* A sheet finding on a room (F1-F4). The code is the tag; what it means is
+     the tooltip, and the same sentence goes into the CSV. */
+  .flag {
+    display: inline-block; font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+    padding: 0 5px; margin: 0 3px 2px 0; border-radius: 4px; cursor: help; white-space: nowrap;
+    background: var(--warn-bg); color: var(--warn-fg); border: 1px solid var(--warn-line);
+  }
+  /* The replacement note that names no unit: shown with F4, kept apart from its count. */
+  .flag.unnamed { background: none; color: var(--flat-fg); border: 1px dashed var(--flat-line); }
   .notecell { color: var(--ink-soft); font-size: 12.5px; max-width: 34ch; }
   .notecell .clamp {
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
@@ -165,6 +174,8 @@
   .card-hd { display: flex; align-items: flex-start; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
   .card-hd h2 { font-size: 15px; }
   .card-hd .code { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
+  .card-hd .stamp { font-size: 11px; color: var(--ink-soft); margin-top: 2px; }
+  .card-hd .stamp b { font-weight: 600; font-variant-numeric: tabular-nums; }
   .tag { font-size: 10.5px; padding: 1px 6px; border-radius: 4px; background: var(--flat-bg); color: var(--flat-fg); border: 1px solid var(--flat-line); }
   .livetag {
     display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: .06em;
@@ -232,7 +243,6 @@
     display: inline-block; width: 0; height: 9px;
     border-left: 1px dashed var(--ink-faint); margin-right: 5px; vertical-align: -1px;
   }
-  .fleetnote { margin-top: 5px; font-size: 11px; }
   .trendcap {
     margin-top: 11px; padding-top: 8px; border-top: 1px solid var(--line-soft);
     font-size: 11px; color: var(--ink-faint);
@@ -253,6 +263,8 @@
   .note .nb { font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 4px; height: fit-content; white-space: nowrap; }
   .note .nt { color: var(--ink-soft); }
   .dup { font-size: 12.5px; color: var(--ink-soft); }
+  .fcount a { color: var(--accent); }
+  .fsub { display: block; margin-top: 3px; font-size: 11.5px; color: var(--ink-faint); }
 
   /* Provenance banner: says where a property's room map came from, and what
      that does NOT mean. Leads the reconciliation tab because reading any
@@ -335,6 +347,7 @@
       <h1>Shower Stream <span class="sub">&middot; Fleet &amp; Ops</span></h1>
     </div>
     <div class="built">
+      <div title="The oldest of the properties&rsquo; sheet export stamps; each card shows its own. Battery readings inside an export can be older: the battery badges say how old.">Sheet export as of <span id="sheetAsOf">&mdash;</span></div>
       <div>Heartbeats as of <span id="hbAsOf">&mdash;</span> <span class="livetag">live</span></div>
       <div class="muted">Page built <span id="builtAt">&mdash;</span></div>
     </div>
@@ -371,6 +384,12 @@
           <option value="unknown">No reading</option>
         </select>
       </label>
+      <label>Heartbeat
+        <select id="fHeartbeat"></select>
+      </label>
+      <label>Finding
+        <select id="fFlag"></select>
+      </label>
       <label class="grow">Search
         <input type="search" id="fSearch" placeholder="room, device, action, notes&hellip;" autocomplete="off">
       </label>
@@ -386,6 +405,7 @@
             <th class="sortable" data-key="room">Room <span class="arrow">&#8645;</span></th>
             <th class="sortable" data-key="deviceName">Device <span class="arrow">&#8645;</span></th>
             <th class="sortable" data-key="status">Status <span class="arrow">&#8645;</span></th>
+            <th title="Sheet findings about this room. Hover a tag for what it means.">Findings</th>
             <th class="sortable" data-key="daysSilent">Days silent <span class="arrow">&#8645;</span></th>
             <th class="sortable" data-key="battery">Battery <span class="arrow">&#8645;</span></th>
             <th class="sortable" data-key="actionItem">Action item <span class="arrow">&#8645;</span></th>
@@ -408,6 +428,7 @@
 
   <section id="view-recon" role="tabpanel" hidden>
     <div id="reconOverrides"></div>
+    <div id="reconFindings" class="recon-block"></div>
     <div id="reconNotes" class="recon-block"></div>
     <div id="reconBlocks"></div>
   </section>
@@ -456,6 +477,11 @@
     var d = new Date(iso);
     return isNaN(d) ? '—' : d.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   }
+  function fmtDateTimeShort(iso) {
+    if (!iso) return '—';
+    var d = new Date(iso);
+    return isNaN(d) ? '—' : d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  }
   function fmtDate(iso) {
     if (!iso) return '—';
     var d = new Date(iso);
@@ -494,12 +520,19 @@
   }
 
   // ---------------------------------------------------------------- header
+  /* Three stamps, three meanings (CUTOVER.md §7). The sheet export stamp is
+     the OLDEST property's; each card carries its own. None of them vouches
+     for battery data, which has its own badge. */
+  document.getElementById('sheetAsOf').textContent = DATA.sheetExportAsOf ? fmtDateTime(DATA.sheetExportAsOf) : 'unknown';
   document.getElementById('builtAt').textContent = fmtDateTime(DATA.builtAt);
   document.getElementById('hbAsOf').textContent = fmtDateTime(DATA.heartbeatsAsOf || DATA.builtAt);
   document.getElementById('nRooms').textContent = ALL_ROOMS.length;
 
   var R = DATA.reconciliation;
-  var reconTotal = (R.ghosts ? R.ghosts.length : 0)
+  var F = DATA.findings || {};
+  var findingTotal = ['f1', 'f2', 'f3', 'f4'].reduce(function (n, k) { return n + (F[k] ? F[k].length : 0); }, 0);
+  var reconTotal = findingTotal
+                 + (R.ghosts ? R.ghosts.length : 0)
                  + (R.unregisteredReporters ? R.unregisteredReporters.length : 0)
                  + (R.roomDeviceMismatches ? R.roomDeviceMismatches.length : 0)
                  + (R.orphanTelemetryRooms ? R.orphanTelemetryRooms.length : 0)
@@ -529,13 +562,15 @@
   }).join('');
 
   // ------------------------------------------------------------ table view
-  var state = { property: '', status: '', action: '', battery: '', q: '', sortKey: null, sortDir: 1 };
+  var state = { property: '', status: '', action: '', battery: '', hb: '', flag: '', q: '', sortKey: null, sortDir: 1 };
 
   var els = {
     property: document.getElementById('fProperty'),
     status: document.getElementById('fStatus'),
     action: document.getElementById('fAction'),
     battery: document.getElementById('fBattery'),
+    hb: document.getElementById('fHeartbeat'),
+    flag: document.getElementById('fFlag'),
     search: document.getElementById('fSearch'),
     body: document.getElementById('tableBody'),
     count: document.getElementById('rowCount'),
@@ -574,6 +609,43 @@
     els.status.value = opts.some(function (o) { return o[0] === state.status; }) ? state.status : '';
   }
 
+  /* Heartbeat state as a filter, every drawn bucket included: "No device" is
+     a state of its own (D11), not a kind of silence and not "Never". */
+  function buildHeartbeatOptions() {
+    var n = function (key) { return ALL_ROOMS.filter(function (r) { return r.heartbeatBucket === key; }).length; };
+    var opts = [['', 'All (' + ALL_ROOMS.length + ')']].concat(hbBuckets.map(function (b) {
+      return [b.key, b.label + ' (' + n(b.key) + ')'];
+    }));
+    els.hb.innerHTML = opts.map(function (o) {
+      return '<option value="' + esc(o[0]) + '">' + esc(o[1]) + '</option>';
+    }).join('');
+    els.hb.value = opts.some(function (o) { return o[0] === state.hb; }) ? state.hb : '';
+  }
+
+  /* Sheet findings as a filter. Counts are ROOMS, so F1's one device shows
+     as the two rooms it sits in. The unnamed replacement note carries F4 and
+     is kept here, so no room with a replacement note drops out of the list. */
+  var FLAG_LABELS = {
+    F1: 'one device, two rooms', F2: 'Location vs Particle tag', F3: 'DeviceId not usable', F4: 'note vs DeviceId'
+  };
+  function flagsOf(r) { return r.flags || []; }
+  function hasFlag(r, code) {
+    var f = flagsOf(r);
+    if (code === 'any') return f.length > 0;
+    for (var i = 0; i < f.length; i++) if (f[i].code === code) return true;
+    return false;
+  }
+  function buildFlagOptions() {
+    var n = function (code) { return ALL_ROOMS.filter(function (r) { return hasFlag(r, code); }).length; };
+    var opts = [['', 'All rooms (' + ALL_ROOMS.length + ')'], ['any', 'Any finding (' + n('any') + ')']]
+      .concat(['F1', 'F2', 'F3', 'F4'].map(function (c) { return [c, c + ' · ' + FLAG_LABELS[c] + ' (' + n(c) + ')']; }));
+    els.flag.innerHTML = opts.map(function (o) {
+      return '<option value="' + esc(o[0]) + '">' + esc(o[1]) + '</option>';
+    }).join('');
+    els.flag.value = opts.some(function (o) { return o[0] === state.flag; }) ? state.flag : '';
+  }
+  function flagTip(f) { return f.code + ' · ' + f.text; }
+
   function filtered() {
     var q = state.q.trim().toLowerCase();
     var rows = ALL_ROOMS.filter(function (r) {
@@ -582,8 +654,11 @@
       else if (state.status && r.status !== state.status) return false;
       if (state.action && r.actionType !== state.action) return false;
       if (state.battery && r.batteryClass !== state.battery) return false;
+      if (state.hb && r.heartbeatBucket !== state.hb) return false;
+      if (state.flag && !hasFlag(r, state.flag)) return false;
       if (q) {
         var hay = [r.room, r.deviceName, r.deviceId, r.actionItem, r.notes, r.propertyName, r.property]
+          .concat(flagsOf(r).map(flagTip))
           .filter(Boolean).join(' ').toLowerCase();
         if (hay.indexOf(q) === -1) return false;
       }
@@ -611,6 +686,27 @@
     return rows;
   }
 
+  /* Days silent, or the state that has no days: "No device" when DeviceId is
+     blank (D11), "Never" when the sheet names a device Particle has never
+     heard, does not know, or that is not a device id at all. */
+  function silentHtml(r, hb) {
+    if (r.heartbeatBucket === TH.heartbeatAge.noDeviceBucket.key) return '<span class="muted">' + esc(hb.label) + '</span>';
+    if (r.daysSilent === null || r.daysSilent === undefined) {
+      return '<span style="color:' + toneVar(hb.tone) + ';font-weight:600">' + esc(hb.label) + '</span>';
+    }
+    return '<span style="color:' + toneVar(hb.tone) + ';font-weight:600">' + fmtDays(r.daysSilent) + '</span>';
+  }
+  function silentTitle(r, hb) {
+    if (r.heartbeatBucket === TH.heartbeatAge.noDeviceBucket.key) return 'No device: DeviceId is blank in the sheet for this room.';
+    if (!r.lastHeartbeat) return hb.label + ': the sheet names a device, but Particle has no heartbeat from it.';
+    return hb.label + ' · last heard from Particle ' + fmtDateTime(r.lastHeartbeat) + ' · counted from page build time';
+  }
+  function flagsHtml(r) {
+    return flagsOf(r).map(function (f) {
+      return '<span class="flag' + (f.unnamed ? ' unnamed' : '') + '" title="' + esc(flagTip(f)) + '">' + esc(f.code) + '</span>';
+    }).join('');
+  }
+
   function rowHtml(r) {
     var hb = hbBucketMeta(r.heartbeatBucket);
     var batTone = BATTERY_TONES[r.batteryClass] || 'flat';
@@ -620,9 +716,8 @@
       + '<td class="num" data-label="Room"><b>' + esc(r.room) + '</b></td>'
       + '<td class="mono" data-label="Device">' + (r.deviceName ? esc(r.deviceName) : '<span class="muted">—</span>') + '</td>'
       + '<td data-label="Status"><span class="pill ' + toneClass(STATUS_TONES[r.status] || 'flat') + '">' + esc(r.status) + '</span></td>'
-      + '<td class="num" data-label="Days silent" title="' + esc(hb.label) + ' · last heard from Particle '
-        + esc(fmtDateTime(r.lastHeartbeat)) + ' · counted from page build time">'
-        + '<span style="color:' + toneVar(hb.tone) + ';font-weight:600">' + fmtDays(r.daysSilent) + '</span></td>'
+      + '<td data-label="Findings">' + flagsHtml(r) + '</td>'
+      + '<td class="num" data-label="Days silent" title="' + esc(silentTitle(r, hb)) + '">' + silentHtml(r, hb) + '</td>'
       + '<td class="num" data-label="Battery" title="' + esc(BATTERY_LABELS[r.batteryClass] || '')
         + (r.batteryAgeDays === null ? '' : ' · reading is approximately ' + fmtDays(r.batteryAgeDays) + ' old') + '">'
         + (r.battery === null
@@ -655,7 +750,7 @@
   // --------------------------------------------------------- URL state
   /* Filter state lives in the query string so a filtered view can be sent to
      someone as a link - "here is 6178's battery list" - instead of described. */
-  var PARAM = { property: 'prop', status: 'status', action: 'action', battery: 'batt', q: 'q' };
+  var PARAM = { property: 'prop', status: 'status', action: 'action', battery: 'batt', hb: 'hb', flag: 'flag', q: 'q' };
 
   /* Opened straight from disk (file://) or from a data: URL, replaceState
      throws a SecurityError. The page must still work in that case - it is
@@ -698,6 +793,8 @@
     els.property.value = state.property;
     els.action.value = state.action;
     els.battery.value = state.battery;
+    els.hb.value = state.hb;
+    els.flag.value = state.flag;
     els.search.value = state.q;
     els.status.value = state.status;
   }
@@ -707,20 +804,26 @@
     state.status = els.status.value;
     state.action = els.action.value;
     state.battery = els.battery.value;
+    state.hb = els.hb.value;
+    state.flag = els.flag.value;
     state.q = els.search.value;
     renderTable();
     writeUrl();
   }
 
   ['change', 'input'].forEach(function (ev) {
-    [els.property, els.status, els.action, els.battery, els.search].forEach(function (el) {
+    [els.property, els.status, els.action, els.battery, els.hb, els.flag, els.search].forEach(function (el) {
       el.addEventListener(ev, onFilterChange);
     });
   });
 
-  document.getElementById('fClear').addEventListener('click', function () {
-    state.property = state.status = state.action = state.battery = state.q = '';
+  function clearFilters() {
+    state.property = state.status = state.action = state.battery = state.hb = state.flag = state.q = '';
     state.sortKey = null; state.sortDir = 1;
+  }
+
+  document.getElementById('fClear').addEventListener('click', function () {
+    clearFilters();
     syncControlsFromState();
     renderTable();
     writeUrl();
@@ -753,11 +856,17 @@
     ['Device', function (r) { return r.deviceName; }],
     ['Particle ID', function (r) { return r.deviceId; }],
     ['Status', function (r) { return r.status; }],
+    // The bucket's label, so a blank DeviceId exports as "No device" and a
+    // device never heard as "Never" - not as two empty Days-silent cells.
+    ['Heartbeat', function (r) { return hbBucketMeta(r.heartbeatBucket).label; }],
     ['Days silent', function (r) { return r.daysSilent; }],
     ['Last heartbeat', function (r) { return r.lastHeartbeat; }],
     ['Battery V', function (r) { return r.battery; }],
     ['Battery class', function (r) { return r.batteryClass; }],
     ['Action item', function (r) { return r.actionItem; }],
+    ['Findings', function (r) {
+      return flagsOf(r).map(function (f) { return f.code + ': ' + f.text; }).join(' | ');
+    }],
     ['Notes', function (r) { return r.notes; }]
   ];
   function csvCell(v) {
@@ -781,6 +890,8 @@
               : state.status ? state.status.toLowerCase()
               : 'all-rooms';
     if (state.property) label = state.property + '-' + label;
+    if (state.hb) label += '-' + state.hb.toLowerCase();
+    if (state.flag) label += '-' + (state.flag === 'any' ? 'findings' : state.flag.toLowerCase());
     a.download = 'shower-stream-' + label + '-' + stamp + '.csv';
     document.body.appendChild(a);
     a.click();
@@ -1024,21 +1135,34 @@
         + ' awaiting room mapping &rarr; <a href="#" data-goto="recon">Reconciliation</a></span>');
     }
 
+    /* This property's own "sheet export as of" (D5). It dates the sheet, not
+       the battery readings inside it - the badge beside it does that. */
+    var stamp = p.snapshot && p.snapshot.currentTime ? fmtDateTimeShort(p.snapshot.currentTime) : 'unknown';
+
+    /* Rooms split three ways that sum to the room count: heard from at least
+       once, a device Particle has never heard, and no device at all (D11). */
+    var never = p.heartbeatHistogram[TH.heartbeatAge.neverBucket.key] || 0;
+    var noDevice = p.heartbeatHistogram[TH.heartbeatAge.noDeviceBucket.key] || 0;
+
     return '<div class="card">'
       + '<div class="card-hd">'
         + '<div><h2>' + esc(p.name) + '</h2><span class="code">ESA ' + esc(p.code) + '</span>'
-        + (p.tag ? ' <span class="tag">' + esc(p.tag) + '</span>' : '') + '</div>'
+        + (p.tag ? ' <span class="tag">' + esc(p.tag) + '</span>' : '')
+        + '<div class="stamp" title="When the sheet export for this property was taken (its CurrentTime stamp).">'
+          + 'Sheet export as of <b>' + esc(stamp) + '</b></div></div>'
         + '<div class="freshness ' + toneClass(fb ? fb.tone : 'flat') + '" title="Heartbeats are live at build time. '
-          + 'This badge reports battery-data age, the only part of this property&rsquo;s data that can go stale.">'
+          + 'This badge reports battery-data age, the only part of this property&rsquo;s data that can go stale. '
+          + 'A fresh sheet export can still carry old battery readings.">'
           + '<div class="fl">Battery data</div>'
           + '<div class="fv">' + (ba.readings ? '~' + fmtDays(ba.medianDays) + ' old' : 'none') + '</div>'
           + '<div class="fd">' + (ba.readings ? 'oldest ' + fmtDays(ba.oldestDays) : '&mdash;') + '</div>'
         + '</div>'
       + '</div>'
       + '<div class="kpis">'
-        + '<div class="kpi"><div class="v">' + c.rooms + '</div><div class="l">Installed</div></div>'
+        + '<div class="kpi"><div class="v">' + c.rooms + '</div><div class="l">Rooms</div></div>'
         + '<div class="kpi"><div class="v" style="color:' + toneVar('good') + '">' + c.reporting + '</div><div class="l">Reporting</div></div>'
-        + '<div class="kpi"><div class="v" style="color:' + toneVar(c.silent ? 'bad' : 'flat') + '">' + c.silent + '</div><div class="l">Silent</div></div>'
+        + '<div class="kpi"><div class="v" style="color:' + toneVar(never ? 'bad' : 'flat') + '">' + never + '</div><div class="l">Never heard</div></div>'
+        + '<div class="kpi"><div class="v" style="color:' + toneVar('flat') + '">' + noDevice + '</div><div class="l">No device</div></div>'
       + '</div>'
       + '<div class="metric"><div class="mh">Status mix</div>' + stack(mix, c.rooms) + legend(mix) + '</div>'
       + '<div class="metric"><div class="mh">Status trend</div>' + statusTrend + '</div>'
@@ -1088,20 +1212,6 @@
       return '<span class="anno"><i></i>' + fmtDay(a.date) + ' &middot; ' + esc(a.label) + '</span>';
     }).join('');
 
-    /* The fleet figure is not the sum of the property cards, and looks like a
-       contradiction unless it says why: devices carrying no property group tag
-       at all cannot be attributed to a property, so they appear here only. */
-    var fleetLast = lastOf(unmapped);
-    var byProperty = DATA.properties.reduce(function (sum, pp) {
-      return sum + (lastOf(propSeries(pp.code, 'unmappedLive')) || 0);
-    }, 0);
-    var ungrouped = fleetLast === null ? 0 : fleetLast - byProperty;
-    var fleetNote = ungrouped > 0
-      ? '<div class="muted fleetnote">' + fleetLast + ' fleet-wide against ' + byProperty
-        + ' across the property cards. The other ' + ungrouped + ' carry no property group tag at all, '
-        + 'so they cannot be attributed to a property.</div>'
-      : '';
-
     // Name the day the live series started from the data, not from a constant.
     var liveStart = (function () {
       var pts = pointsOf(seriesOf(function (h) { return h.liveUnder2d; }));
@@ -1118,7 +1228,6 @@
         + '<div class="metric"><div class="mh">Live, awaiting room mapping</div>'
           + trendRow([{ label: 'awaiting room mapping', tone: 'warn', vals: unmapped }],
                      'live device{s} awaiting room mapping', { w: 260, h: 44 })
-          + fleetNote
         + '</div>'
       + '</div>'
       + '<div class="trendcap">Trends cover the last ' + TR.windowDays + ' days of daily records'
@@ -1240,6 +1349,48 @@
     return '<td class="rowhead" data-label="Prop"><b>' + esc(x.property) + '</b> <span class="muted">' + esc(x.propertyName) + '</span></td>';
   }
 
+  /* Sheet findings, counted. They are where the consolidated sheet disagrees
+     with itself or with Particle: flagged, never failed on, and never
+     corrected here - the sheet stays the source. Each count opens All rooms
+     filtered to the rooms it names; the full worklists come later. */
+  (function renderFindingsSummary() {
+    var roomsWith = function (code) { return ALL_ROOMS.filter(function (r) { return hasFlag(r, code); }).length; };
+    var cov = F.f2Coverage || {};
+    // D12: F2 can only check a device that carries a property tag, so its
+    // count is shown with how much of each property it could see.
+    var covText = DATA.properties.filter(function (p) { return cov[p.code]; }).map(function (p) {
+      var pct = cov[p.code].pctCheckable;
+      return esc(p.code) + ' ' + (typeof pct === 'number' ? pct.toFixed(1) : '—') + '&nbsp;%';
+    }).join(' &middot; ');
+    var unnamed = F.f4Unnamed ? F.f4Unnamed.length : 0;
+    var rows = [
+      { code: 'F1', what: 'One device is listed in two or more rooms.' },
+      { code: 'F2', what: 'A room&rsquo;s Location disagrees with the property tag its device carries in Particle.',
+        sub: covText ? 'F2 can only check devices that carry a property tag: ' + covText + ' of rooms with a device. '
+          + 'Where most devices carry no tag it cannot look, so a low count there is not a clean bill.' : '' },
+      { code: 'F3', what: 'DeviceId is not a Particle device id, holds a spreadsheet error, or is unknown to Particle. '
+        + 'The room reads Never.' },
+      { code: 'F4', what: 'A note names a replacement unit that the DeviceId column does not show.',
+        sub: unnamed ? '+' + unnamed + ' note' + (unnamed === 1 ? ' records' : 's record')
+          + ' a replacement without naming the unit; ' + (unnamed === 1 ? 'it is' : 'they are')
+          + ' tagged F4 in All rooms but not counted here.' : '' }
+    ];
+    document.getElementById('reconFindings').innerHTML = block('Sheet findings', findingTotal,
+      'Where the consolidated sheet disagrees with itself or with Particle. Flagged, never failed on, and never '
+      + 'corrected here: the sheet stays the source of truth. Each count opens the rooms it names in All rooms.',
+      '<div class="tablewrap"><table><thead><tr><th>Flag</th><th>What it means</th><th>Count</th></tr></thead><tbody>'
+      + rows.map(function (x) {
+          var n = F[x.code.toLowerCase()] ? F[x.code.toLowerCase()].length : 0;
+          var rooms = roomsWith(x.code);
+          return '<tr><td class="rowhead" data-label="Flag"><b>' + x.code + '</b></td>'
+            + '<td data-label="What it means">' + x.what + (x.sub ? '<span class="fsub">' + x.sub + '</span>' : '') + '</td>'
+            + '<td class="num fcount" data-label="Count"><b>' + n + '</b>'
+            + (rooms ? ' <a href="#" data-goto="rooms" data-flag="' + x.code + '">' + rooms + ' room'
+              + (rooms === 1 ? '' : 's') + ' &rarr;</a>' : '') + '</td></tr>';
+        }).join('')
+      + '</tbody></table></div>');
+  })();
+
   var blocks = '';
 
   // Devices the cloud has heard from that map to no room we render. Leads the
@@ -1253,21 +1404,16 @@
       : '';
     blocks += block('Live but unmapped', lum.length,
       'Heard from Particle within ' + Q.liveWindowDays + ' days but matching no room on this dashboard. '
+      + 'Each is attributed to a property by its Particle property tag or, without one, by the property the '
+      + 'sheet export&rsquo;s heartbeat tab places it in. Devices neither can place are not listed or counted. '
       + esc(R.liveUnmappedNote || '') + staleLine,
-      table(['Prop', 'Device', 'Short id', 'Group', 'Last heard'], lum, function (u) {
-        return '<tr>'
-          + '<td class="rowhead" data-label="Prop">'
-            + (u.property
-                ? '<b>' + esc(u.property) + '</b> <span class="muted">' + esc(u.propertyName) + '</span>'
-                : '<span class="muted">unattributed</span>')
-          + '</td>'
-          + '<td class="mono" data-label="Device">' + esc(u.deviceName || '—')
-            + (u.alsoInExcludedTabs && u.alsoInExcludedTabs.length
-                ? ' <span class="muted">(also in ' + u.alsoInExcludedTabs.map(esc).join(', ') + ')</span>'
-                : '')
-          + '</td>'
+      table(['Prop', 'Device', 'Short id', 'Groups', 'Attributed by', 'Last heard'], lum, function (u) {
+        return '<tr>' + propCell(u)
+          + '<td class="mono" data-label="Device">' + esc(u.deviceName || '—') + '</td>'
           + '<td class="mono muted" data-label="Short id">' + esc(u.deviceIdShort) + '</td>'
-          + '<td class="mono" data-label="Group">' + esc(u.group || '—') + '</td>'
+          + '<td class="mono" data-label="Groups">' + esc((u.groups && u.groups.length ? u.groups.join(', ') : u.group) || '—') + '</td>'
+          // D2: a Location-attributed device says so, every time.
+          + '<td data-label="Attributed by">' + esc(u.attribution === 'tag' ? 'tag ' + u.group : 'attributed by export Location') + '</td>'
           + '<td class="num" data-label="Last heard" title="' + esc(fmtDateTime(u.lastHeard)) + '">'
             + fmtDays(u.ageDays) + '</td></tr>';
       }));
@@ -1460,11 +1606,20 @@
     var a = e.target.closest && e.target.closest('[data-goto]');
     if (!a) return;
     e.preventDefault();
+    // A finding count opens All rooms showing exactly the rooms it names.
+    var flag = a.getAttribute('data-flag');
+    if (flag) {
+      clearFilters();
+      state.flag = flag;
+      syncControlsFromState();
+    }
     show(a.getAttribute('data-goto'));
   });
 
   var initial = readUrl();
   buildStatusOptions();
+  buildHeartbeatOptions();
+  buildFlagOptions();
   syncControlsFromState();
   show(initial, true);
   writeUrl();
