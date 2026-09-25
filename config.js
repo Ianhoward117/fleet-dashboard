@@ -20,12 +20,18 @@
 // ---------------------------------------------------------------------------
 
 // Fetched as .xlsx via https://docs.google.com/spreadsheets/d/{ID}/export?format=xlsx
+//
+// One workbook: Priya's consolidated export, which carries every property's
+// rooms, triage, battery and heartbeat export on shared tabs, partitioned by
+// its Location column. It replaced the three per-property work-order
+// workbooks and the registry workbook at the cutover (CUTOVER.md §1-§2).
 const SHEET_IDS = {
-  registry: '19JCSzQ-vykHvhWL1IjR6r6EEIe_rUeCa', // master device spreadsheet
-  wo_6197: '1aBSCjtVAgPVE54WhvkG2M4rHX5RRYoYrwh7yE5JQxHo',
-  wo_9502: '1SKzTkrNG2d727boPAKMRITDGHseUs3_QLpkd22JYUGo',
-  wo_6178: '1Hw0pYIWKSIOp8TRego3QayW4IlXLe0CPeGoyKSvr3Po',
+  consolidated: '1_qlAjrnafeOQN-EYXGXf0Gks3BZySXtpWk_FKbpQQGI',
 };
+
+// The tabs the build reads. A missing one fails the fetch. `devicenames` also
+// exists in the workbook and is deliberately neither required nor read.
+const SOURCE_TABS = ['roomstatus', 'batterystatus', 'heartbeatstatus'];
 
 // The zone the sheet exports write their timestamps in. They are Central
 // wall-clock times with no offset attached: read as Central they agree with
@@ -87,6 +93,10 @@ PARTICLE.devicesPath = () => '/v1/products/' + PARTICLE.productId + '/devices';
  *   ESA 9829 - Austin - Northwest  - property fully uninstalled 2026-08-19
  *
  * Tab names must match the registry workbook exactly.
+ *
+ * RETIRED at the cutover and no longer read: an unmapped device now needs a
+ * live esa_ tag or a heartbeatstatus Location to be listed at all, which is
+ * what keeps this hardware off the page (CUTOVER.md §6). Block 5 deletes it.
  */
 const EXCLUDED_REGISTRY_TABS = [
   'The Lab_P2',
@@ -101,11 +111,13 @@ const EXCLUDED_REGISTRY_TABS = [
 /**
  * Array order is the order properties appear on the page.
  *
- *   code        - ESA property number, used as the stable internal key
+ *   code        - ESA property number, used as the stable internal key. It is
+ *                 also the value of the consolidated sheet's Location column.
  *   name        - free-text display name; edit at will
- *   sheetKey    - which SHEET_IDS entry holds this property's work order
- *   registryTab - exact tab name in the registry workbook, or null when the
- *                 property has no registry coverage at all (6197)
+ *   sheetKey    - RETIRED at the cutover: the legacy work-order workbook.
+ *   registryTab - RETIRED at the cutover: the legacy registry tab.
+ *                 The build no longer reads either; probe/02-exports.js still
+ *                 does. Block 5 of the cutover deletes both.
  *   tag         - optional status pill shown next to the name, or null
  *
  * The Lab_P2, Fort Custer Education Center and ESA 9829 tabs exist in the
@@ -295,6 +307,7 @@ const TRENDS = {
 
 module.exports = {
   SHEET_IDS,
+  SOURCE_TABS,
   SHEET_TIME_ZONE,
   SITE_URL,
   PARTICLE,

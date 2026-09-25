@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Stage 1 of the pipeline: pull every source workbook down to data/raw/.
+ * Stage 1 of the pipeline: pull the source workbook down to data/raw/.
  *
  * This stage is deliberately paranoid. A fleet dashboard that silently
  * renders all but one of its properties is worse than one that fails,
@@ -10,8 +10,9 @@
  * So: any download error, any non-xlsx payload, any workbook missing the
  * tabs we depend on, and the whole build stops here with a loud message.
  *
- * As of v2 there are two sources. The workbooks still carry rooms, triage
- * status and battery; heartbeats now come from the Particle Cloud API. This
+ * There are two sources. One workbook - the consolidated export, since the
+ * cutover - carries rooms, triage status and battery; heartbeats come from the
+ * Particle Cloud API (v2). This
  * file is deliberately the ONLY place that knows the API exists - everything
  * downstream reads data/raw/ and cannot tell where a number came from.
  */
@@ -19,7 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
-const { SHEET_IDS, PROPERTIES, PARTICLE } = require('./config');
+const { SHEET_IDS, SOURCE_TABS, PROPERTIES, PARTICLE } = require('./config');
 
 const RAW_DIR = path.join(__dirname, 'data', 'raw');
 const PARTICLE_FILE = path.join(RAW_DIR, 'particle-devices.json');
@@ -47,8 +48,11 @@ const OVERRIDES_FILE = path.join(RAW_DIR, 'room-overrides.json');
 // wrong. Use replace where the sheet map is not trustworthy at all.
 const OVERRIDE_MODES = ['replace', 'merge'];
 
-// Every work order workbook must carry these three sheets.
-const REQUIRED_WO_SHEETS = ['Room Status', 'py_export_batterystatus', 'py_export_heartbeatstatus'];
+// Every HTTP request this build makes, retries included. There are two
+// sources and one Particle endpoint, so the expected figure is 1 workbook plus
+// one per page of the device list - 10 with today's fleet. It is logged, so a
+// build that starts asking for more is visible in its own output.
+const requests = { workbook: 0, particle: 0 };
 
 // A .xlsx is a zip archive, so it always starts with the bytes "PK".
 // Google serves an HTML error page (with HTTP 200!) when a sheet is not
@@ -64,6 +68,7 @@ async function download(key, id) {
   const url = EXPORT_URL(id);
   let res;
   try {
+    requests.workbook++;
     res = await fetch(url, { redirect: 'follow' });
   } catch (err) {
     throw new FetchError(`[${key}] network request failed: ${err.message}\n  url: ${url}`);
@@ -98,19 +103,7 @@ function validateStructure(key, buf) {
   }
 
   const have = wb.SheetNames;
-  const missing = [];
-
-  if (key === 'registry') {
-    // Only the tabs for in-scope properties matter. The Lab and Fort Custer
-    // tabs may come and go freely; 6197 has no tab by design.
-    for (const p of PROPERTIES) {
-      if (p.registryTab && !have.includes(p.registryTab)) missing.push(p.registryTab);
-    }
-  } else {
-    for (const s of REQUIRED_WO_SHEETS) {
-      if (!have.includes(s)) missing.push(s);
-    }
-  }
+  const missing = SOURCE_TABS.filter((s) => !have.includes(s));
 
   if (missing.length) {
     throw new FetchError(
@@ -338,6 +331,7 @@ async function fetchDevicePage(page, token) {
   for (let attempt = 0; ; attempt++) {
     let res;
     try {
+      requests.particle++;
       res = await fetch(url, {
         method: 'GET', // read-only: the device list is a cloud record, not a device command
         headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' },
@@ -507,25 +501,10 @@ async function fetchAll() {
   // workbooks. Cheap, and it makes the common misconfiguration obvious.
   requireParticleToken();
 
-  // Same reasoning for the overrides: a malformed file should stop the build
-  // in the first second, not after every workbook has been downloaded. This
-  // is a local disk read and issues no request.
-  const overrides = loadRoomOverrides();
-
+  // The workbook write below needs this on a fresh checkout.
   fs.mkdirSync(RAW_DIR, { recursive: true });
-  fs.writeFileSync(OVERRIDES_FILE, JSON.stringify(overrides, null, 2));
 
-  const overridden = Object.entries(overrides.properties);
-  if (overridden.length) {
-    for (const [code, block] of overridden) {
-      console.log(
-        'FETCH  room override loaded: ' + code + '  mode=' + block.mode + '  ' +
-          block.rooms.length + ' rooms  (source: ' + (block.source || 'unstated') + ')'
-      );
-    }
-  }
-
-  console.log('FETCH  downloading source workbooks');
+  console.log('FETCH  downloading source workbook');
 
   const entries = Object.entries(SHEET_IDS);
   const results = await Promise.allSettled(
@@ -558,11 +537,17 @@ async function fetchAll() {
     );
   }
 
-  console.log(`FETCH  ${results.length} workbooks written to data/raw/`);
+  console.log(`FETCH  ${results.length} workbook${results.length === 1 ? '' : 's'} written to data/raw/`);
 
   // Heartbeats come second so a sheet problem still reports first: the
-  // workbooks are the older, more fragile half of the pipeline.
+  // workbook is the older, more fragile half of the pipeline.
   await fetchParticleDevices();
+
+  const total = requests.workbook + requests.particle;
+  console.log(
+    `FETCH  ${total} requests: ${requests.workbook} workbook + ${requests.particle} Particle ` +
+      `(${PARTICLE.devicesPath()} only)`
+  );
 
   return RAW_DIR;
 }
@@ -570,11 +555,8 @@ async function fetchAll() {
 module.exports = {
   fetchAll,
   fetchParticleDevices,
-  // Exported so normalize.js reads the committed override through exactly the
-  // same validator the build uses. Pointing it at the source file rather than
-  // a copy under data/raw/ means `node normalize.js` picks up an edit without
-  // a re-fetch - which matters, because a re-fetch costs 13 network requests
-  // and this file is meant to be iterated on.
+  // The override is retired: the build no longer loads it. These three stay
+  // exported only for test-overrides.js, and go with it in Block 5.
   loadRoomOverrides,
   RoomOverrideError,
   OVERRIDE_MODES,
