@@ -249,16 +249,25 @@ const THRESHOLDS = {
 /**
  * Controls the sparklines drawn from the committed daily records in history/.
  *
- *   windowDays  - how many trailing days the sparklines cover. render.js ships
- *                 exactly this many records to the page, so raising it makes
- *                 the payload bigger. Nothing is lost either way: history/
- *                 keeps every record ever written.
+ *   windowDays  - how many trailing CALENDAR DAYS the sparklines cover, ending
+ *                 on the build's UTC date (H1). Trend x is the date, so a day
+ *                 with no record takes its real width as a gap. render.js
+ *                 ships only the records dated inside the window - never "the
+ *                 last N records", which would pull older days in across an
+ *                 outage. Nothing is lost either way: history/ keeps every
+ *                 record ever written.
  *
- *   annotations - vertical markers drawn on the FLEET-level series only, for
- *                 events that move a fleet total without anything in the field
- *                 having changed. Per-property series never need one: a
- *                 property's own counts are unaffected by another property
- *                 leaving the dashboard.
+ *   annotations - vertical markers for events that move a series without
+ *                 anything in the field having changed. Each declares the
+ *                 charts it is drawn on (H2), and the build fails if it does
+ *                 not:
+ *                   charts: 'all'               every chart on the page
+ *                   charts: ['fleet', '6178']   the fleet strip, and 6178's card
+ *                 'fleet' is the fleet strip's charts; a property code is that
+ *                 property's card. Scope an entry to every chart whose line it
+ *                 explains, and no others. A marker is drawn only when a
+ *                 record exists on its date: date it on the FIRST RECORD THAT
+ *                 CARRIES the new value, not on the day the change shipped.
  *
  * ADD AN ENTRY HERE whenever a property is added to or removed from
  * PROPERTIES. Without one, the fleet line shows an unexplained step and the
@@ -268,14 +277,19 @@ const THRESHOLDS = {
  * because history files are a record and are never rewritten.
  *
  * THE GAP RULE, which the page implements and this file is the place to state:
- * a record written before a field existed carries no value for that field.
- * That is a gap - the line breaks and resumes. It is never a zero. Coercing an
- * absent field to 0 would draw a cliff that never happened.
+ * a value that was not recorded is a gap - the line breaks and resumes. It is
+ * never a zero. That covers a record written before a field existed, and (H1)
+ * a day with no record at all, such as the 2026-09-16 .. 09-24 outage.
+ * Coercing either to 0 would draw a cliff that never happened, and drawing
+ * the days either side next to each other would hide that anything was
+ * missing.
  */
 const TRENDS = {
   windowDays: 30,
   annotations: [
-    { date: '2026-08-20', label: '9829 removed' },
+    // A property left PROPERTIES, which moves only the fleet totals: a
+    // property's own counts are unaffected by another leaving the page.
+    { date: '2026-08-20', label: '9829 removed', charts: ['fleet'] },
     // 6178's room map moved from the registry/export to the committed override
     // in data/room-overrides.json. 32 more rooms at 6178 gained a device in one
     // step, so the fleet's awaiting-room-mapping line drops sharply. Nothing
@@ -289,7 +303,7 @@ const TRENDS = {
     // history/2026-08-26.json before this shipped, so that record holds the old
     // numbers and the step falls on the 27th. Until that record exists the
     // annotation simply does not render.
-    { date: '2026-08-27', label: '6178 room map overridden' },
+    { date: '2026-08-27', label: '6178 room map overridden', charts: ['fleet', '6178'] },
     // 6197 and 9502 gained merge-mode overrides: the override wins the rooms it
     // names, the rest of each property keeps its sheet-derived map. 6197 picks
     // up 9 rooms that had no device; 9502 has 16 rooms re-pointed and one
@@ -299,7 +313,7 @@ const TRENDS = {
     // Dated the 27th for the same reason as the entry above: today's history
     // record was written by the cron before this shipped, so the step lands on
     // the next one. Both events share that date and the chart shows one marker.
-    { date: '2026-08-27', label: '6197 + 9502 room overrides' },
+    { date: '2026-08-27', label: '6197 + 9502 room overrides', charts: ['fleet', '6197', '9502'] },
     // 6178 moved from replace to merge. Replace took the property's assignments
     // entirely from the override file, so the 28 roster rooms it does not name
     // had no device at all; merge lets the sheets keep speaking for them. 27 of
@@ -319,7 +333,7 @@ const TRENDS = {
     // Dated the 29th, not the 30th: history/2026-08-29.json had not been written
     // when this shipped, so today's record is the first one that carries the new
     // numbers - the same convention as the entries above.
-    { date: '2026-08-29', label: '6178 override -> merge' },
+    { date: '2026-08-29', label: '6178 override -> merge', charts: ['fleet', '6178'] },
   ],
 };
 

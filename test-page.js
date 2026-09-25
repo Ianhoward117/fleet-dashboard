@@ -389,7 +389,8 @@ function runPage(payload, search = '') {
 }
 const rowsOf = (html) => (html.match(/<tr>[\s\S]*?<\/tr>/g) || []);
 const titlesOf = (html, cls) => [...html.matchAll(new RegExp('<span class="' + cls + '[^"]*" title="([^"]*)"', 'g'))].map((m) => m[1]);
-const unesc = (s) => s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+const ENTITIES = { quot: '"', lt: '<', gt: '>', middot: '·', ndash: '–', mdash: '—', nbsp: ' ', rsquo: '’', rarr: '→', amp: '&' };
+const unesc = (s) => s.replace(/&(\w+);/g, (m, e) => (e in ENTITIES ? ENTITIES[e] : m));
 
 // ===========================================================================
 console.log('\nPAGE: stamps (D5, §7)');
@@ -549,6 +550,208 @@ t('the fleet strip no longer explains an untagged pool', () => {
   const page = runPage(payloadOf(fixture(), hist));
   assert.ok(!/property group tag at all/.test(page.html('fleetStrip')));
   assert.ok(!/fleetnote/.test(page.html('fleetStrip')));
+});
+
+// ===========================================================================
+console.log('\nTRENDS: the window is the last 30 calendar days (H1)');
+
+// A daily record as snapshot.js writes it, for a day given as an offset from
+// the build date (0 = the build's own UTC date, -29 = the window's first day).
+const addDays = (ymd, n) => new Date(Date.parse(ymd + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+const END = BUILT.slice(0, 10);
+const rec = (offset, triageRows, extra = {}) => ({
+  date: addDays(END, offset), builtAt: addDays(END, offset) + 'T11:00:00.000Z', triageRows, unmappedLive: 3, liveUnder2d: 160,
+  properties: {
+    6197: { rooms: 94, ok: 60, issue: 30, check: 4, liveUnder2d: 50, unmappedLive: 1 },
+    6178: { rooms: 109, ok: 20, issue: 80, check: 9, liveUnder2d: 45, unmappedLive: 0 },
+    9502: { rooms: 116, ok: 70, issue: 40, check: 6, liveUnder2d: 65, unmappedLive: 2 },
+    9829: { rooms: 118, ok: 1, issue: 2, check: 3 },
+  },
+  ...extra,
+});
+const TRENDS0 = { windowDays: 30, annotations: [] };
+
+t('the window runs from 29 days before the build date to the build date, inclusive', () => {
+  const p = R.buildPayload(fixture(), [], TRENDS0);
+  assert.deepStrictEqual(keep([p.trends.windowDays, p.trends.windowStart, p.trends.windowEnd]), [30, '2026-08-27', '2026-09-25']);
+});
+t('records are kept by date, not by count: both edges in, one day beyond out, a future date out', () => {
+  const records = [rec(-40, 1), rec(-30, 2), rec(-29, 3), rec(-10, 4), rec(-1, 5), rec(0, 6), rec(1, 7)];
+  const p = R.buildPayload(fixture(), records, TRENDS0);
+  assert.deepStrictEqual(keep(p.history.map((h) => h.date)), ['2026-08-27', '2026-09-15', '2026-09-24', '2026-09-25']);
+});
+t('fewer records than days never pulls in an older record to make up the count', () => {
+  const p = R.buildPayload(fixture(), [rec(-45, 1), rec(-31, 1), rec(-5, 1)], TRENDS0);
+  assert.deepStrictEqual(p.history.map((h) => h.date), ['2026-09-20']);
+});
+t('records are sorted by date, and one with no readable date is left out', () => {
+  const odd = { ...rec(-3, 9), date: '9/22/2026' };
+  const p = R.buildPayload(fixture(), [rec(-1, 1), odd, rec(-7, 2), null], TRENDS0);
+  assert.deepStrictEqual(p.history.map((h) => h.date), ['2026-09-18', '2026-09-24']);
+});
+t('a removed property is trimmed from records; fleet fields and absent fields are left as recorded', () => {
+  const old = rec(-2, 236);
+  delete old.liveUnder2d;
+  delete old.properties['6178'].unmappedLive;
+  const p = R.buildPayload(fixture(), [old], TRENDS0);
+  const h = p.history[0];
+  assert.deepStrictEqual(keep(Object.keys(h.properties).sort()), ['6178', '6197', '9502']);
+  assert.strictEqual(h.triageRows, 236);
+  assert.strictEqual('liveUnder2d' in h, false, 'absent stays absent: the gap rule');
+  assert.strictEqual('unmappedLive' in h.properties['6178'], false);
+});
+
+// ===========================================================================
+console.log('\nTRENDS: annotations declare their charts (H2)');
+
+t('each existing annotation carries the scope its comment describes', () => {
+  const { TRENDS } = require('./config');
+  assert.deepStrictEqual(keep(TRENDS.annotations.map((a) => [a.date, a.label, a.charts])), [
+    ['2026-08-20', '9829 removed', ['fleet']],
+    ['2026-08-27', '6178 room map overridden', ['fleet', '6178']],
+    ['2026-08-27', '6197 + 9502 room overrides', ['fleet', '6197', '9502']],
+    ['2026-08-29', '6178 override -> merge', ['fleet', '6178']],
+  ]);
+  assert.deepStrictEqual(R.annotationProblems(TRENDS, ['6197', '6178', '9502']), []);
+});
+t('an annotation must declare fleet, a configured property, or all', () => {
+  const codes = ['6197', '6178', '9502'];
+  const probs = (a) => R.annotationProblems({ windowDays: 30, annotations: [a] }, codes);
+  assert.deepStrictEqual(probs({ date: '2026-09-25', label: 'x', charts: 'all' }), []);
+  assert.deepStrictEqual(probs({ date: '2026-09-25', label: 'x', charts: ['fleet', '9502'] }), []);
+  for (const bad of [
+    { date: '2026-09-25', label: 'no scope' },
+    { date: '2026-09-25', label: 'empty', charts: [] },
+    { date: '2026-09-25', label: 'typo', charts: ['6187'] },
+    { date: '2026-09-25', label: 'word', charts: 'fleet' },
+    { date: '9/25/2026', label: 'date', charts: 'all' },
+    { date: '2026-09-25', label: '', charts: 'all' },
+  ]) {
+    assert.strictEqual(probs(bad).length, 1, JSON.stringify(bad));
+  }
+});
+t('the payload carries each annotation with its charts', () => {
+  const trends = { windowDays: 30, annotations: [{ date: '2026-09-25', label: 'consolidated sheet', charts: 'all' }] };
+  assert.deepStrictEqual(keep(R.buildPayload(fixture(), [], trends).trends.annotations),
+    [{ date: '2026-09-25', label: 'consolidated sheet', charts: 'all' }]);
+});
+
+// ===========================================================================
+console.log('\nTRENDS: what the page draws');
+
+// The fleet triage chart is 260 wide with 2.5 of padding; x is linear in the day.
+const FLEET_W = 260;
+const xOf = (day, w = FLEET_W, days = 30) => (2.5 + (day / (days - 1)) * (w - 5)).toFixed(1);
+const svgsOf = (html) => html.match(/<svg[\s\S]*?<\/svg>/g) || [];
+const pathsOf = (svg) => [...svg.matchAll(/<path d="([^"]+)"/g)].map((m) => m[1]);
+const xsOfPath = (d) => [...d.matchAll(/[ML](-?[\d.]+) /g)].map((m) => m[1]);
+const dotsOf = (svg) => [...svg.matchAll(/<circle cx="([\d.]+)"/g)].map((m) => m[1]);
+const marksOf = (svg) => [...svg.matchAll(/<line x1="([\d.]+)"/g)].map((m) => m[1]);
+const pageWith = (records, annotations = []) => runPage(R.buildPayload(fixture(), records, { windowDays: 30, annotations }));
+
+t('a missing day breaks the line: points sit on their calendar day, not beside each other', () => {
+  // Days 20..23 recorded, 24..27 missing, 28 and 29 recorded.
+  const page = pageWith([-9, -8, -7, -6, -1, 0].map((o, i) => rec(o, 100 + i)));
+  const triage = svgsOf(page.html('fleetStrip'))[0];
+  const paths = pathsOf(triage);
+  assert.strictEqual(keep(paths.length), 2);
+  assert.deepStrictEqual(keep(xsOfPath(paths[0])), [xOf(20), xOf(21), xOf(22), xOf(23)]);
+  assert.deepStrictEqual(xsOfPath(paths[1]), [xOf(28), xOf(29)]);
+});
+t('a lone day between two gaps is drawn as a dot at its own date', () => {
+  const page = pageWith([rec(-20, 5), rec(-10, 6), rec(-9, 7), rec(0, 8)]);
+  const triage = svgsOf(page.html('fleetStrip'))[0];
+  assert.deepStrictEqual(keep(dotsOf(triage)), [xOf(9), xOf(29)]);
+  assert.deepStrictEqual(pathsOf(triage).map(xsOfPath), [[xOf(19), xOf(20)]]);
+});
+t('the window edges: the first day draws at the left pad, the build date at the right', () => {
+  const page = pageWith([rec(-29, 1), rec(-28, 2), rec(-1, 3), rec(0, 4)]);
+  const xs = pathsOf(svgsOf(page.html('fleetStrip'))[0]).flatMap(xsOfPath);
+  assert.deepStrictEqual(keep(xs), ['2.5', xOf(1), xOf(28), '257.5']);
+});
+t('the same gap shows on every chart: fleet, and each card', () => {
+  const page = pageWith([-12, -11, -10, -1, 0].map((o) => rec(o, 50)));
+  const fleet = svgsOf(page.html('fleetStrip'));
+  const cards = svgsOf(page.html('cards'));
+  assert.strictEqual(fleet.length, 2);
+  assert.ok(cards.length >= 6, 'status and live charts on three cards');
+  for (const svg of fleet.concat(cards)) {
+    // Every line in every chart is split at the gap: each path lies wholly on
+    // one side of it, and each chart has a path on both sides.
+    const w = Number(svg.match(/width="(\d+)"/)[1]);
+    const paths = pathsOf(svg).map((d) => xsOfPath(d).map(Number));
+    const before = paths.filter((xs) => xs.every((x) => x <= Number(xOf(19, w))));
+    const after = paths.filter((xs) => xs.every((x) => x >= Number(xOf(28, w))));
+    assert.strictEqual(before.length + after.length, paths.length, 'a path crosses the gap: ' + svg.slice(0, 300));
+    assert.ok(before.length && after.length && before.length === after.length, svg.slice(0, 300));
+  }
+});
+t('the key under a line counts days, and says how many were not recorded', () => {
+  const page = pageWith([-9, -8, -7, -6, -1, 0].map((o) => rec(o, 60)));
+  const sd = page.html('fleetStrip').match(/<span class="muted sdays">([^<]*)<\/span>/)[1];
+  assert.strictEqual(keep(unesc(sd)), 'over 10 days · 4 not recorded');
+  const full = pageWith([-2, -1, 0].map((o) => rec(o, 60))).html('fleetStrip').match(/<span class="muted sdays">([^<]*)<\/span>/)[1];
+  assert.strictEqual(full, 'over 3 days');
+});
+t('the caption names the window by date and the days with no record', () => {
+  const page = pageWith([-29, -28, -9, -8, -7, 0].map((o) => rec(o, 60)));
+  const cap = unesc(page.html('fleetStrip').match(/<div class="trendcap">([\s\S]*?)<\/div>/)[1]);
+  assert.ok(cap.includes('Trends cover the last 30 days, Aug 27 – Sep 25.'), cap);
+  assert.ok(cap.includes('No daily record for Aug 29 – Sep 15 and Sep 19 – Sep 24.'), cap);
+  assert.ok(/gap, never as a zero/.test(cap), cap);
+  keep(cap);
+});
+t('a field that starts partway through the window is named in the caption; one present throughout is not', () => {
+  const early = rec(-5, 60);
+  delete early.liveUnder2d;
+  const page = pageWith([early, rec(-4, 60), rec(0, 60)]);
+  const cap = unesc(page.html('fleetStrip').match(/<div class="trendcap">([\s\S]*?)<\/div>/)[1]);
+  assert.ok(/began Sep 21 2026/.test(cap), cap);
+  const plain = pageWith([rec(-4, 60), rec(0, 60)]);
+  assert.ok(!/began/.test(plain.html('fleetStrip')));
+});
+t('a series with one point shows its value and the day tracking started, zone-free', () => {
+  const page = pageWith([rec(-3, 77)]);
+  const txt = page.html('fleetStrip').match(/<div class="collecting">([\s\S]*?)<\/div>/)[1];
+  assert.strictEqual(keep(unesc(txt.replace(/<[^>]+>/g, ''))), '77 triage rows · tracking since Sep 22');
+});
+t('same-day marker: two annotations on one date draw one line, at that date, and both are named', () => {
+  const page = pageWith([-12, -11, -10, -1, 0].map((o) => rec(o, 50)), [
+    { date: addDays(END, -11), label: 'first', charts: ['fleet', '6178'] },
+    { date: addDays(END, -11), label: 'second', charts: ['fleet', '6197'] },
+  ]);
+  const fleet = svgsOf(page.html('fleetStrip'));
+  assert.deepStrictEqual(keep(fleet.map(marksOf)), [[xOf(18)], [xOf(18)]], 'both fleet charts, one line each');
+  const annos = page.html('fleetStrip').match(/<div class="annos">([\s\S]*?)<\/div>/)[1];
+  assert.deepStrictEqual(keep([...annos.matchAll(/&middot; ([^<]*)<\/span>/g)].map((m) => m[1])), ['first', 'second']);
+});
+t('a scoped annotation draws only on the charts it names', () => {
+  const page = pageWith([-12, -11, -10, -1, 0].map((o) => rec(o, 50)), [
+    { date: addDays(END, -11), label: '6178 only', charts: ['6178'] },
+    { date: addDays(END, -1), label: 'fleet only', charts: ['fleet'] },
+  ]);
+  const cards = page.html('cards').split('<div class="card">').slice(1);
+  const marks = (html) => svgsOf(html).map(marksOf);
+  assert.ok(marks(page.html('fleetStrip')).every((m) => m.length === 1 && m[0] === xOf(28)));
+  assert.ok(marks(cards[1]).every((m) => m.length === 1), '6178: every chart marked');
+  assert.ok(marks(cards[0]).every((m) => m.length === 0), '6197: unmarked');
+  assert.ok(/6178 only/.test(cards[1]) && !/6178 only/.test(cards[0]) && !/fleet only/.test(cards[1]));
+});
+t('an "all" annotation draws on every chart and is named on every card and the fleet strip', () => {
+  const page = pageWith([-12, -11, -10, -1, 0].map((o) => rec(o, 50)), [{ date: END, label: 'consolidated sheet', charts: 'all' }]);
+  const all = svgsOf(page.html('fleetStrip')).concat(svgsOf(page.html('cards')));
+  assert.ok(all.length >= 8);
+  for (const svg of all) {
+    const w = Number(svg.match(/width="(\d+)"/)[1]);
+    assert.deepStrictEqual(marksOf(svg), [xOf(29, w)]);
+  }
+  assert.strictEqual((page.html('cards').match(/consolidated sheet/g) || []).length, 3);
+  assert.ok(/consolidated sheet/.test(page.html('fleetStrip')));
+});
+t('an annotation on a day with no record is not drawn (the record carries the step)', () => {
+  const page = pageWith([rec(-12, 50), rec(-11, 50), rec(0, 50)], [{ date: addDays(END, -5), label: 'nothing here', charts: 'all' }]);
+  assert.ok(svgsOf(page.html('fleetStrip')).every((s) => marksOf(s).length === 0));
+  assert.ok(!/nothing here/.test(page.html('fleetStrip') + page.html('cards')));
 });
 
 // ---------------------------------------------------------------------------

@@ -921,17 +921,21 @@
   }
 
   // ----------------------------------------------------------- trend lines
-  /* Sparklines are drawn from the committed daily records in history/,
-     windowed by TRENDS.windowDays in config.js.
+  /* Sparklines are drawn from the committed daily records in history/. The
+     window is TRENDS.windowDays CALENDAR DAYS ending on the build's UTC date
+     (H1): render.js ships the records dated inside it, and x is each record's
+     date, so a day with no record keeps its real width on the chart.
 
-     THE GAP RULE, which everything below exists to honour: a record written
-     before a field existed carries no value for that field. That is a GAP -
-     the line breaks and picks up again - and it is never a zero. liveUnder2d
-     and unmappedLive only begin on 2026-08-20, so coercing their absence to 0
-     would draw every one of those series falling off a cliff on a day when
-     nothing happened in the field at all, only a schema change. */
+     THE GAP RULE, which everything below exists to honour: a value that was
+     not recorded is a GAP - the line breaks and picks up again - and it is
+     never a zero. That covers a record written before a field existed
+     (liveUnder2d and unmappedLive begin on 2026-08-20) and a day with no
+     record at all (the 2026-09-16 .. 09-24 outage). A zero would draw a cliff
+     nobody saw in the field; closing the line over a missing day would hide
+     that anything was missing. */
   var TR = DATA.trends || { windowDays: 30, annotations: [] };
   var HIST = DATA.history || [];
+  var DAYS = TR.windowDays || 30;
 
   /* History dates are plain YYYY-MM-DD. new Date('2026-08-20') is parsed as
      UTC midnight, which formats as the 19th anywhere west of Greenwich -
@@ -943,6 +947,18 @@
     var d = new Date(+p[0], +p[1] - 1, +p[2]);
     return isNaN(d) ? String(ymd) : d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   }
+
+  /* Counting days is not formatting them. Date.UTC turns a YYYY-MM-DD into a
+     whole number of days with no local offset anywhere, so a date sits at the
+     same x in Austin and in UTC. fmtDay is still the only way to SHOW one. */
+  function dayNumber(ymd) {
+    var p = String(ymd || '').split('-');
+    if (p.length !== 3) return NaN;
+    return Math.round(Date.UTC(+p[0], +p[1] - 1, +p[2]) / DAY);
+  }
+  var DAY0 = dayNumber(TR.windowStart || (HIST.length ? HIST[0].date : ''));
+  function dayIndex(ymd) { return dayNumber(ymd) - DAY0; } // 0 is the window's first day
+  function ymdOfIndex(i) { return new Date((DAY0 + i) * DAY).toISOString().slice(0, 10); }
 
   /* undefined marks a gap. Only a real finite number is plotted: a missing
      key, a null or a string all mean "not recorded", and none of them become
@@ -959,9 +975,14 @@
       return p ? p[field] : undefined;
     });
   }
+  /* The recorded points of a series: k is the record, i its day in the window. */
   function pointsOf(vals) {
     var out = [];
-    for (var i = 0; i < vals.length; i++) if (vals[i] !== undefined) out.push({ i: i, v: vals[i] });
+    for (var k = 0; k < vals.length; k++) {
+      if (vals[k] === undefined) continue;
+      var i = dayIndex(HIST[k].date);
+      if (isFinite(i) && i >= 0 && i < DAYS) out.push({ k: k, i: i, v: vals[k] });
+    }
     return out;
   }
   function lastOf(vals) { var p = pointsOf(vals); return p.length ? p[p.length - 1].v : null; }
@@ -969,20 +990,44 @@
     return pointsOf(vals).some(function (p) { return p.v !== 0; });
   }
 
+  /* H2: an annotation names the charts it belongs on - 'fleet' for the fleet
+     strip, a property code for that card, or 'all'. It is drawn only on a day
+     that has a record: that record is the one carrying the step, and a marker
+     on an empty day would point at nothing. */
+  function appliesTo(a, chart) {
+    return a.charts === 'all' || (Array.isArray(a.charts) && a.charts.indexOf(chart) !== -1);
+  }
+  function annotationsFor(chart) {
+    if (!chart) return [];
+    return (TR.annotations || []).filter(function (a) {
+      return appliesTo(a, chart) && HIST.some(function (h) { return h.date === a.date; });
+    });
+  }
+  function annoLine(chart) {
+    var list = annotationsFor(chart);
+    if (!list.length) return '';
+    return '<div class="annos">' + list.map(function (a) {
+      return '<span class="anno"><i></i>' + fmtDay(a.date) + ' &middot; ' + esc(a.label) + '</span>';
+    }).join('') + '</div>';
+  }
+
   /* One SVG, one or more series, gaps preserved.
 
-       - x is the record's index in the window, so a gap occupies its real
-         horizontal width instead of the line closing over it
+       - x is the record's calendar day in the window, so a missing day - or
+         a missing field - occupies its real width instead of the line
+         closing over it
        - y uses a domain shared by every series in the chart, which keeps flat
          lines at their true relative heights rather than collapsing them all
          onto one centred track
        - a run of exactly one point is drawn as a dot: there is no segment to
          draw through a single point, and skipping it would hide a day that
-         was genuinely recorded */
+         was genuinely recorded
+       - opts.chart names the chart for annotations; two on one day share one
+         marker */
   function trendSvg(series, opts) {
     opts = opts || {};
     var w = opts.w || 132, h = opts.h || 30, pad = 2.5;
-    var n = HIST.length;
+    var n = DAYS;
 
     var all = [];
     series.forEach(function (s) { pointsOf(s.vals).forEach(function (p) { all.push(p.v); }); });
@@ -997,20 +1042,16 @@
     var x = function (i) { return n < 2 ? w / 2 : pad + (i / (n - 1)) * (w - pad * 2); };
     var y = function (v) { return flat ? h / 2 : h - pad - ((v - min) / span) * (h - pad * 2); };
 
-    /* Fleet series only. A step caused by a property leaving the dashboard is
-       a clerical event, and an unexplained step in a fleet total is exactly
-       how a clerical event gets misread as a fleet event. */
-    var marks = '';
-    if (opts.annotate) {
-      (TR.annotations || []).forEach(function (a) {
-        var idx = -1;
-        for (var k = 0; k < n; k++) { if (HIST[k].date === a.date) { idx = k; break; } }
-        if (idx < 0) return; // annotated day is outside the window - nothing to mark
-        var ax = x(idx).toFixed(1);
-        marks += '<line x1="' + ax + '" y1="0" x2="' + ax + '" y2="' + h + '"'
-          + ' stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="2 2" opacity=".8"/>';
-      });
-    }
+    /* A clerical step - a property leaving, a source switching - is marked
+       on every chart it moves, so it is not misread as a field event. */
+    var marks = '', drawn = {};
+    annotationsFor(opts.chart).forEach(function (a) {
+      if (drawn[a.date]) return;
+      drawn[a.date] = true;
+      var ax = x(dayIndex(a.date)).toFixed(1);
+      marks += '<line x1="' + ax + '" y1="0" x2="' + ax + '" y2="' + h + '"'
+        + ' stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="2 2" opacity=".8"/>';
+    });
 
     var body = series.map(function (s) {
       var stroke = toneVar(s.tone), paths = [], dots = [], run = [], prev = null;
@@ -1024,7 +1065,7 @@
         run = [];
       };
       pointsOf(s.vals).forEach(function (p) {
-        if (prev !== null && p.i !== prev + 1) flush(); // non-consecutive: break the line
+        if (prev !== null && p.i !== prev + 1) flush(); // not the next calendar day: break the line
         run.push(p);
         prev = p.i;
       });
@@ -1052,12 +1093,14 @@
     // {s} is the plural marker, so a lone device does not read "1 devices".
     var words = esc(unit).replace(/\{s\}/g, n === 1 ? '' : 's');
     return '<div class="collecting"><span class="sv">' + n + '</span> ' + words
-      + ' &middot; tracking since ' + fmtDay(HIST[pts[0].i].date) + '</div>';
+      + ' &middot; tracking since ' + fmtDay(HIST[pts[0].k].date) + '</div>';
   }
 
   /* A labelled line with its last value as plain text beside it - no hover
      required - or the sparse form when there is not yet a line to draw. The
-     first series leads: it decides whether a line is warranted. */
+     first series leads: it decides whether a line is warranted, and its
+     first and last recorded days are the span the key reports - with the
+     days in between that have no value, so a gap is also said in words. */
   function trendRow(series, unit, opts) {
     var lead = series[0];
     var leadPts = pointsOf(lead.vals);
@@ -1068,10 +1111,31 @@
       return '<span class="sk"><i style="background:' + toneVar(s.tone) + '"></i><b>'
         + (lv === null ? '—' : lv) + '</b> ' + esc(s.label) + '</span>';
     }).join('');
+    var spanDays = leadPts[leadPts.length - 1].i - leadPts[0].i + 1;
+    var missing = spanDays - leadPts.length;
 
     return '<div class="spark">' + trendSvg(series, opts)
       + '<div class="sd">' + keys
-      + '<span class="muted sdays">over ' + leadPts.length + ' days</span></div></div>';
+      + '<span class="muted sdays">over ' + spanDays + ' day' + (spanDays === 1 ? '' : 's')
+      + (missing ? ' &middot; ' + missing + ' not recorded' : '') + '</span></div></div>';
+  }
+
+  /* Days in the window with no record at all, as runs of day indexes. */
+  function missingDayRuns() {
+    var have = {};
+    HIST.forEach(function (h) { have[dayIndex(h.date)] = true; });
+    var runs = [];
+    for (var i = 0; i < DAYS; i++) {
+      if (have[i]) continue;
+      var last = runs[runs.length - 1];
+      if (last && last[1] === i - 1) last[1] = i;
+      else runs.push([i, i]);
+    }
+    return runs;
+  }
+  function listWords(items) {
+    if (items.length < 2) return items.join('');
+    return items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
   }
 
   document.getElementById('cards').innerHTML = DATA.properties.map(function (p) {
@@ -1092,18 +1156,17 @@
 
     /* Three thin lines on one shared scale. A shared domain is what keeps a
        flat Ok, Check and Issue at three distinct heights instead of stacking
-       them on a single centred track - and today all three are flat, because
-       status still comes from the py_export sheets and they have not been
-       re-exported. */
+       them on a single centred track. Each card's charts carry the
+       annotations scoped to this property (H2). */
     var statusTrend = trendRow([
       { label: 'issue', tone: 'bad', vals: propSeries(p.code, 'issue') },
       { label: 'ok', tone: 'good', vals: propSeries(p.code, 'ok') },
       { label: 'check', tone: 'warn', vals: propSeries(p.code, 'check') }
-    ], 'issue row{s}', { h: 38 });
+    ], 'issue row{s}', { h: 38, chart: p.code });
 
     var liveTrend = trendRow(
       [{ label: 'heard from < 2d', tone: 'good', vals: propSeries(p.code, 'liveUnder2d') }],
-      'device{s} heard from in the last 2 days'
+      'device{s} heard from in the last 2 days', { chart: p.code }
     );
 
     /* The registry-backfill progress meter. Shown only where the series has
@@ -1114,7 +1177,7 @@
     var showUnmapped = everNonZero(unmappedVals);
     var unmappedTrend = showUnmapped
       ? trendRow([{ label: 'awaiting room mapping', tone: 'warn', vals: unmappedVals }],
-                 'live device{s} awaiting room mapping')
+                 'live device{s} awaiting room mapping', { chart: p.code })
       : '';
 
     var hbParts = hbBuckets.map(function (b) {
@@ -1170,6 +1233,7 @@
       + (showUnmapped
           ? '<div class="metric"><div class="mh">Awaiting room mapping</div>' + unmappedTrend + '</div>'
           : '')
+      + annoLine(p.code)
       + '<div class="metric"><div class="mh">Heartbeat age</div>' + bars(hbParts, hbMax) + '</div>'
       + '<div class="metric"><div class="mh">Battery' + (TH.batteryVoltage.confirmed
           ? ' <span class="muted">(ok ≥' + TH.batteryVoltage.okAbove + 'V, warn ≥' + TH.batteryVoltage.warnAbove + 'V)</span>'
@@ -1205,37 +1269,40 @@
     var triage = seriesOf(function (h) { return h.triageRows; });
     var unmapped = seriesOf(function (h) { return h.unmappedLive; });
 
-    // Only annotations that actually land inside the window are worth naming.
-    var notes = (TR.annotations || []).filter(function (a) {
-      return HIST.some(function (h) { return h.date === a.date; });
-    }).map(function (a) {
-      return '<span class="anno"><i></i>' + fmtDay(a.date) + ' &middot; ' + esc(a.label) + '</span>';
-    }).join('');
-
-    // Name the day the live series started from the data, not from a constant.
+    // Name the day the live series started from the data, not from a
+    // constant - and only when the window holds records from before it.
     var liveStart = (function () {
       var pts = pointsOf(seriesOf(function (h) { return h.liveUnder2d; }));
-      return pts.length ? HIST[pts[0].i].date : null;
+      return pts.length && pts[0].k > 0 ? HIST[pts[0].k].date : null;
     })();
+
+    // Say the gaps in words as well as drawing them: an outage reads as one.
+    var gaps = missingDayRuns().map(function (r) {
+      return r[0] === r[1] ? fmtDay(ymdOfIndex(r[0]))
+        : fmtDay(ymdOfIndex(r[0])) + ' &ndash; ' + fmtDay(ymdOfIndex(r[1]));
+    });
 
     el.innerHTML = '<div class="fleet-hd">Fleet trends</div>'
       + '<div class="fleet-grid">'
         + '<div class="metric"><div class="mh">Triage rows</div>'
           + trendRow([{ label: 'triage rows', tone: 'bad', vals: triage }], 'triage row{s}',
-                     { w: 260, h: 44, annotate: true })
-          + (notes ? '<div class="annos">' + notes + '</div>' : '')
+                     { w: 260, h: 44, chart: 'fleet' })
         + '</div>'
         + '<div class="metric"><div class="mh">Live, awaiting room mapping</div>'
           + trendRow([{ label: 'awaiting room mapping', tone: 'warn', vals: unmapped }],
-                     'live device{s} awaiting room mapping', { w: 260, h: 44 })
+                     'live device{s} awaiting room mapping', { w: 260, h: 44, chart: 'fleet' })
         + '</div>'
       + '</div>'
-      + '<div class="trendcap">Trends cover the last ' + TR.windowDays + ' days of daily records'
+      + annoLine('fleet')
+      + '<div class="trendcap">Trends cover the last ' + DAYS + ' days, '
+        + fmtDay(TR.windowStart) + ' &ndash; ' + fmtDay(TR.windowEnd) + '.'
+        + (gaps.length ? ' No daily record for ' + listWords(gaps) + '.' : '')
+        + ' A day with no record, or a record written before a field existed, is drawn as a gap, '
+        + 'never as a zero.'
         + (liveStart
-            ? '. Live-series tracking &mdash; devices heard from, and devices awaiting room mapping &mdash; '
-              + 'began ' + fmtDay(liveStart) + ' ' + liveStart.split('-')[0] + '; '
-              + 'earlier records predate those fields and are drawn as a gap, never as a zero.'
-            : '.')
+            ? ' Live-series tracking &mdash; devices heard from, and devices awaiting room mapping &mdash; '
+              + 'began ' + fmtDay(liveStart) + ' ' + liveStart.split('-')[0] + '.'
+            : '')
       + '</div>';
   })();
 

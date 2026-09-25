@@ -25,9 +25,9 @@ const OUT_DIR = path.join(__dirname, 'dist');
 const OUT_FILE = path.join(OUT_DIR, 'index.html');
 
 /**
- * Read the committed daily records, oldest first, so the rollup can draw
- * trend lines. Missing or empty history is normal on a fresh checkout and
- * must never fail the build - the page just says it is still collecting.
+ * Read every committed daily record. Missing or empty history is normal on a
+ * fresh checkout and must never fail the build - the page just says it is
+ * still collecting. Windowing is buildPayload's job.
  */
 function loadHistory() {
   if (!fs.existsSync(HISTORY_DIR)) return [];
@@ -40,29 +40,78 @@ function loadHistory() {
       console.warn(`RENDER  skipping unreadable history file: ${name}`);
     }
   }
-  // Keep the page light: TRENDS.windowDays is what the sparklines cover, so
-  // shipping more than that is payload nobody looks at.
-  //
-  // Also drop per-property blocks for properties no longer in config: history
-  // files are an immutable record and keep them, but a removed property has no
-  // card on the page, so shipping its old counts is dead weight in the payload
-  // (and leaves a decommissioned property named in a page that should not
-  // mention it). Fleet-level fields on each record are left exactly as
-  // recorded - which is why the fleet triage line still steps 236 -> 155 on
-  // 2026-08-20 and needs the annotation in config to explain itself.
-  //
-  // Absent fields are left absent. Older records predate liveUnder2d and
-  // unmappedLive and must arrive at the page still missing them, so the page
-  // can draw a gap. Defaulting them to 0 here would invent a cliff.
-  const live = new Set(PROPERTIES.map((p) => p.code));
-  return records.slice(-TRENDS.windowDays).map((rec) => {
-    if (!rec || !rec.properties) return rec;
-    const properties = {};
-    for (const [code, counts] of Object.entries(rec.properties)) {
-      if (live.has(code)) properties[code] = counts;
+  return records;
+}
+
+const YMD = /^\d{4}-\d{2}-\d{2}$/;
+const addDays = (ymd, n) => new Date(Date.parse(ymd + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+
+/**
+ * The trend window, in CALENDAR DAYS (H1): the TRENDS.windowDays days ending
+ * on the build's own UTC date. That is the date a daily record is filed under
+ * (snapshot.js names it by UTC build time), so today's record, once written,
+ * is the window's last day. Dates are compared as YYYY-MM-DD strings and
+ * shifted by whole UTC days, so no local offset ever enters.
+ */
+function trendWindow(builtAt, windowDays) {
+  const end = String(builtAt || '').slice(0, 10);
+  if (!YMD.test(end)) throw new Error(`RENDER FAILED: builtAt ${JSON.stringify(builtAt)} carries no date to end the trend window on.`);
+  return { start: addDays(end, -(windowDays - 1)), end };
+}
+
+/**
+ * The records inside the window, oldest first - by date, never by count. A
+ * day with no record is simply absent, and the page draws it as a gap; an
+ * older record is never pulled in to make up the number.
+ *
+ * Per-property blocks for properties no longer in config are dropped: history
+ * files are an immutable record and keep them, but a removed property has no
+ * card on the page, so shipping its old counts is dead weight (and names a
+ * decommissioned property on a page that should not). Fleet-level fields are
+ * left exactly as recorded - which is why the fleet triage line still steps
+ * 236 -> 155 on 2026-08-20 and needs its annotation to explain itself.
+ *
+ * Absent fields are left absent. Older records predate liveUnder2d and
+ * unmappedLive and must arrive at the page still missing them, so the page
+ * can draw a gap. Defaulting them to 0 here would invent a cliff.
+ */
+function windowHistory(records, win, liveCodes) {
+  const live = new Set(liveCodes);
+  return (records || [])
+    .filter((rec) => rec && YMD.test(String(rec.date)) && rec.date >= win.start && rec.date <= win.end)
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    .map((rec) => {
+      if (!rec.properties) return rec;
+      const properties = {};
+      for (const [code, counts] of Object.entries(rec.properties)) {
+        if (live.has(code)) properties[code] = counts;
+      }
+      return { ...rec, properties };
+    });
+}
+
+/**
+ * H2: every TRENDS annotation declares the charts it is drawn on - 'all', or
+ * a list of 'fleet' and configured property codes. A config error here fails
+ * the build: an annotation drawn on the wrong charts, or silently on none, is
+ * how a clerical step gets read as a field event.
+ */
+function annotationProblems(trends, codes) {
+  const known = new Set(['fleet', ...codes]);
+  const problems = [];
+  for (const [i, a] of ((trends && trends.annotations) || []).entries()) {
+    const where = `TRENDS.annotations[${i}] ${JSON.stringify((a && a.label) || '')}`;
+    if (!a || !YMD.test(String(a.date))) problems.push(`${where}: date must be YYYY-MM-DD, got ${JSON.stringify(a && a.date)}`);
+    else if (typeof a.label !== 'string' || !a.label.trim()) problems.push(`${where}: needs a label`);
+    else if (a.charts === 'all') continue;
+    else if (!Array.isArray(a.charts) || !a.charts.length) {
+      problems.push(`${where}: charts must be 'all' or a list of 'fleet' and property codes, got ${JSON.stringify(a.charts)}`);
+    } else {
+      const unknown = a.charts.filter((c) => !known.has(c));
+      if (unknown.length) problems.push(`${where}: charts names ${unknown.map((c) => JSON.stringify(c)).join(', ')}, which is not 'fleet' or a configured property`);
     }
-    return { ...rec, properties };
-  });
+  }
+  return problems;
 }
 
 /** Inline the logo so the published page still makes zero external requests. */
@@ -267,8 +316,10 @@ function payloadProblems(payload) {
   return problems;
 }
 
-/** The embedded page data, built from normalized data and the history records to ship. */
-function buildPayload(data, history) {
+/** The embedded page data, built from normalized data and every daily record on file. */
+function buildPayload(data, records, trends = TRENDS) {
+  const codes = data.properties.map((p) => p.code);
+  const win = trendWindow(data.builtAt, trends.windowDays);
   // Ship one flat array of every room and let the browser derive the triage
   // queue from it. Sending both would duplicate every triage row inside the
   // room rows for no benefit.
@@ -294,10 +345,19 @@ function buildPayload(data, history) {
     // F1-F4 and F2's coverage. data.logFindings is never read here.
     findings: pageFindings(data.findings),
     properties: data.properties.map(({ rooms: _rooms, ...rest }) => rest),
-    history,
-    // Window length and fleet-series annotations. Editing trends is a
-    // config.js job, not a template.html job.
-    trends: TRENDS,
+    // The records inside the window, by date. Editing trends is a config.js
+    // job, not a template.html job.
+    history: windowHistory(records, win, codes),
+    trends: {
+      windowDays: trends.windowDays,
+      windowStart: win.start,
+      windowEnd: win.end,
+      annotations: (trends.annotations || []).map((a) => ({
+        date: a.date,
+        label: a.label,
+        charts: a.charts === 'all' ? 'all' : [...a.charts],
+      })),
+    },
   };
 }
 
@@ -312,6 +372,7 @@ function render() {
   }
   const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
   fail('normalized data failed its own consistency checks', sanityProblems(data));
+  fail('config.js TRENDS is not valid', annotationProblems(TRENDS, data.properties.map((p) => p.code)));
 
   const payload = buildPayload(data, loadHistory());
   fail('the page payload carries something it must not', payloadProblems(payload));
@@ -349,16 +410,19 @@ function render() {
     `RENDER  ${payload.properties.length} properties, ${rooms.length} rooms, ${triageCount} triage rows, ` +
       `${reconItems} reconciliation items`
   );
+  const tr = payload.trends;
   console.log(
     payload.history.length
-      ? `RENDER  ${payload.history.length} day(s) of history for trend lines ` +
-          `(${TRENDS.windowDays}-day window)`
-      : 'RENDER  no history yet - trends begin once the daily workflow has run'
+      ? `RENDER  ${payload.history.length} daily record(s) in the ${tr.windowDays}-day trend window ` +
+          `${tr.windowStart} .. ${tr.windowEnd}; ${tr.windowDays - payload.history.length} day(s) without a record draw as gaps`
+      : 'RENDER  no history in the trend window - trends begin once the daily workflow has run'
   );
   return OUT_FILE;
 }
 
-module.exports = { render, OUT_FILE, buildPayload, payloadProblems, sanityProblems, PAGE_FIELDS };
+module.exports = {
+  render, OUT_FILE, buildPayload, payloadProblems, sanityProblems, annotationProblems, PAGE_FIELDS,
+};
 
 if (require.main === module) {
   try {
