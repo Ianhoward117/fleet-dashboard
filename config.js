@@ -104,6 +104,20 @@ const EXCLUDED_REGISTRY_TABS = [
   'ESA 9829 - Austin - Northwest',
 ];
 
+/**
+ * Out-of-scope site names that must never reach the page in a structured
+ * field: the lab bench, Fort Custer, and the uninstalled 9829. render.js fails
+ * the build if one appears anywhere in the page payload outside free-text
+ * notes (D7). 9829 is matched on its full site name rather than the bare
+ * number, because "9829" would false-positive on any device id that happens
+ * to contain those hex digits.
+ *
+ * A NOTE that mentions one is not fatal: it is a finding in the build log,
+ * and the note still renders as written, because it is what a person wrote
+ * about that room. Names are matched exactly as written (case-sensitive).
+ */
+const OUT_OF_SCOPE_NAMES = ['The Lab', 'Fort Custer', 'ESA 9829'];
+
 // ---------------------------------------------------------------------------
 // Properties
 // ---------------------------------------------------------------------------
@@ -316,6 +330,7 @@ module.exports = {
   SITE_URL,
   PARTICLE,
   EXCLUDED_REGISTRY_TABS,
+  OUT_OF_SCOPE_NAMES,
   PROPERTIES,
   THRESHOLDS,
   TRENDS,

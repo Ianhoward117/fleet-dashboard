@@ -31,7 +31,9 @@
 const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
-const { PROPERTIES, THRESHOLDS, EXCLUDED_REGISTRY_TABS, PARTICLE, SHEET_TIME_ZONE, SOURCE_TABS } = require('./config');
+const {
+  PROPERTIES, THRESHOLDS, EXCLUDED_REGISTRY_TABS, PARTICLE, SHEET_TIME_ZONE, SOURCE_TABS, OUT_OF_SCOPE_NAMES,
+} = require('./config');
 const PARTICLE_PRODUCT_ID = PARTICLE.productId;
 // The override is a committed source file, not fetched data, so it is read
 // through fetch.js's validator rather than from data/raw/. That way
@@ -835,6 +837,7 @@ function findLocationTagConflicts(rows, devicesById, liveCodes) {
         flag: 'F2',
         property: r.property,
         room: roomOf(r),
+        sheetRow: r.sheetRow,
         deviceId: r.deviceId,
         deviceIdShort: shortId(r.deviceId),
         deviceName: d.name ? String(d.name) : null,
@@ -854,9 +857,9 @@ function findDeviceIdProblems(rows, devicesById) {
     if (!r) continue;
     if (r.deviceIdProblem) {
       const reason = r.deviceIdProblem === 'sheet error' ? 'spreadsheet error' : 'not a device id';
-      out.push({ flag: 'F3', property: r.property, room: roomOf(r), reason, value: r.deviceIdRaw });
+      out.push({ flag: 'F3', property: r.property, room: roomOf(r), sheetRow: r.sheetRow, reason, value: r.deviceIdRaw });
     } else if (r.deviceId && !(devicesById && devicesById.has(r.deviceId))) {
-      out.push({ flag: 'F3', property: r.property, room: roomOf(r), reason: 'unknown to Particle', value: r.deviceId });
+      out.push({ flag: 'F3', property: r.property, room: roomOf(r), sheetRow: r.sheetRow, reason: 'unknown to Particle', value: r.deviceId });
     }
   }
   return out;
@@ -907,7 +910,7 @@ function findNoteReplacementConflicts(rows, devicesByName) {
     const p = r ? parseReplacementNote(r.notes) : null;
     if (!p) continue;
     recognised++;
-    const base = { flag: 'F4', property: r.property, room: roomOf(r), note: r.notes };
+    const base = { flag: 'F4', property: r.property, room: roomOf(r), sheetRow: r.sheetRow, note: r.notes };
     if (p.kind === 'unnamed') {
       unnamed.push({ ...base, kind: p.kind, deviceId: r.deviceId || null });
       continue;
@@ -928,6 +931,113 @@ function findNoteReplacementConflicts(rows, devicesByName) {
     });
   }
   return { findings, unnamed, recognised };
+}
+
+/**
+ * D7: notes that name an out-of-scope site. A finding for the build log only;
+ * the note still renders as written, because it is what a person wrote about
+ * that room. Names are matched exactly as written, as render.js matches them
+ * in structured fields.
+ */
+function findNotesNamingOutOfScope(rows, names) {
+  const out = [];
+  for (const r of rows || []) {
+    if (!r || typeof r.notes !== 'string') continue;
+    const hit = (names || []).filter((n) => r.notes.includes(n));
+    if (hit.length) out.push({ property: r.property, room: roomOf(r), sheetRow: r.sheetRow, names: hit });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Findings: what the page shows, and what only the log carries
+// ---------------------------------------------------------------------------
+
+/**
+ * The split D7 draws. Page findings are the sheet conflicts a person can act
+ * on from the dashboard: F1-F4 with their room references, and F2's coverage,
+ * which says where F2 could not look. Log findings live in
+ * data/normalized.json and the build log only - unplaced telemetry (D10),
+ * dropped rows (D15, blank rooms), notes naming an out-of-scope site (D7),
+ * devices tagged for two properties, sheet hygiene. render.js ships the first
+ * list by name and fails the build if a key from the second reaches the page.
+ */
+const PAGE_FINDING_KEYS = ['f1', 'f2', 'f2Coverage', 'f3', 'f4', 'f4Unnamed', 'f4NotesRecognised'];
+const LOG_FINDING_KEYS = [
+  'unplacedTelemetry', 'conflictingTagDevices', 'outOfScopeRows', 'noRoomRows', 'blankRoomstatusRows',
+  'notesNamingOutOfScope', 'sheetHygiene',
+];
+
+/**
+ * Put each page finding on the room row it is about, as a code and a sentence
+ * a person can read in a tooltip or a CSV cell. Every room gets a list, empty
+ * when nothing is flagged.
+ *
+ * F2, F3 and F4 come from one sheet row each, and attach to that row by its
+ * sheet row number - so of two rows for one room, only the row whose note or
+ * DeviceId raised the finding is flagged. F1 is about a device: it attaches to
+ * every row, in each room it names, that holds that device.
+ */
+function flagRooms(rooms, findings) {
+  const f = findings || {};
+  const bySheetRow = new Map();
+  for (const r of rooms) {
+    r.flags = [];
+    if (Number.isInteger(r.sheetRow)) bySheetRow.set(r.sheetRow, r);
+  }
+  const shown = (r) => (r.deviceName ? r.deviceName : r.deviceId ? '…' + shortId(r.deviceId) : null);
+  const deviceClause = (r) => (!r ? '' : r.deviceId ? 'DeviceId shows ' + shown(r) : 'DeviceId is blank');
+  const put = (x, flag) => {
+    const r = bySheetRow.get(x.sheetRow);
+    if (r) r.flags.push(flag);
+  };
+
+  for (const x of f.f1 || []) {
+    for (const here of x.rooms) {
+      const others = x.rooms.filter((o) => o !== here);
+      const away = others.filter((o) => o.property !== here.property).length;
+      const where = ' is also listed in ' + others.map((o) => o.property + '/' + o.room).join(', ') +
+        (!away ? '' : away === others.length ? ', another property' : ', including another property');
+      for (const r of rooms) {
+        if (r.property !== here.property || r.room !== here.room || r.deviceId !== x.deviceId) continue;
+        r.flags.push({ code: 'F1', text: (x.deviceName || shown(r)) + where });
+      }
+    }
+  }
+  for (const x of f.f2 || []) {
+    put(x, {
+      code: 'F2',
+      text: (x.deviceName || '…' + x.deviceIdShort) + ' is tagged ' + x.group + ' in Particle, which belongs to ' + x.tagProperty,
+    });
+  }
+  for (const x of f.f3 || []) {
+    const text = x.reason === 'spreadsheet error' ? 'DeviceId holds the spreadsheet error ' + x.value
+      : x.reason === 'not a device id' ? 'DeviceId "' + x.value + '" is not a Particle device id'
+        : 'DeviceId …' + shortId(x.value) + ' is not in the Particle product';
+    put(x, { code: 'F3', text });
+  }
+  for (const x of f.f4 || []) {
+    const r = bySheetRow.get(x.sheetRow);
+    let text = 'note names ' + x.namedUnit;
+    if (x.reason === 'no exact Particle name') {
+      text += ', which matches no Particle device name exactly' + (r && r.deviceId ? '; ' + deviceClause(r) : '');
+    } else if (x.reason === 'ambiguous name') {
+      text += ', which several Particle devices share' + (r && r.deviceId ? '; ' + deviceClause(r) : '');
+    } else if (x.reason === 'DeviceId is not a device id') {
+      text += '; DeviceId is not a device id';
+    } else {
+      text += '; ' + deviceClause(r);
+    }
+    put(x, { code: 'F4', text });
+  }
+  // D6: the note that records a replacement without naming the unit is shown
+  // apart from the 28. It carries the F4 code, marked unnamed, so the room is
+  // not lost from an F4 filter while the F4 count stays the count of findings.
+  for (const x of f.f4Unnamed || []) {
+    const r = bySheetRow.get(x.sheetRow);
+    put(x, { code: 'F4', unnamed: true, text: 'note records a replacement but names no unit; ' + deviceClause(r) });
+  }
+  return rooms;
 }
 
 // ---------------------------------------------------------------------------
@@ -1576,6 +1686,8 @@ function normalize() {
         propertyName: prop.name,
         room: t.room.display,
         roomKey: t.room.key,
+        // The roomstatus row this came from: how a finding finds its row.
+        sheetRow: t.sheetRow,
         deviceName: h.deviceName,
         deviceId: h.deviceId,
         status: t.status || 'Unknown',
@@ -1707,6 +1819,8 @@ function normalize() {
   const allRows = PROPERTIES.flatMap((p) => part.byProperty.get(p.code));
   const f2 = findLocationTagConflicts(allRows, particle.byId, liveCodes);
   const f4 = findNoteReplacementConflicts(allRows, particle.byName);
+  // Page findings (PAGE_FINDING_KEYS): F1-F4 with their rooms, and where F2
+  // could not look. Each also lands on its room row as a flag.
   const findings = {
     f1: findDuplicateDevices(allRows, particle.byId),
     f2: f2.findings,
@@ -1715,12 +1829,17 @@ function normalize() {
     f4: f4.findings,
     f4Unnamed: f4.unnamed,
     f4NotesRecognised: f4.recognised,
-    // Log-only (D10, D15). Never a page list, and never counted on the page.
+  };
+  flagRooms(properties.flatMap((p) => p.rooms), findings);
+  // Log-only findings (LOG_FINDING_KEYS; D7, D10, D15). They stay in this
+  // file and the build log, and never reach the page payload.
+  const logFindings = {
     unplacedTelemetry: findUnplacedTelemetry(src.battery, src.heartbeat, heldIds, particle.byId, hb.locationsById, liveCodes),
     conflictingTagDevices: findConflictingTagDevices(particle.devices, heldIds, liveCodes),
     outOfScopeRows: part.outOfScope,
     noRoomRows: part.noRoom,
     blankRoomstatusRows: src.rooms.blank,
+    notesNamingOutOfScope: findNotesNamingOutOfScope(allRows, OUT_OF_SCOPE_NAMES),
     sheetHygiene: {
       heartbeatDuplicateIds: hb.duplicateIds,
       heartbeatMultiLocationIds: hb.multiLocationIds,
@@ -1798,9 +1917,10 @@ function normalize() {
       liveButUnmapped: lbu.rows,
       notes,
     },
-    // Not shipped to the page: render.js sends an explicit list of keys, and
-    // this is not one of them. Display is a later block's decision.
+    // Shipped to the page by render.js, key by key (PAGE_FINDING_KEYS).
     findings,
+    // Never shipped: the build log and this file only (D7).
+    logFindings,
   };
 
   fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true });
@@ -1912,7 +2032,9 @@ function report(data) {
   }
   for (const x of f.f4Unnamed) console.log(`    unnamed: ${where(x)}  ${JSON.stringify(x.note)}`);
 
-  const ut = f.unplacedTelemetry;
+  // Everything below is log-only: data/normalized.json and this report, never the page (D7).
+  const lf = data.logFindings;
+  const ut = lf.unplacedTelemetry;
   const utDevices = [...new Set(ut.map((u) => u.deviceId))];
   const utBy = (s) => ut.filter((u) => u.source === s).length;
   console.log(
@@ -1930,7 +2052,7 @@ function report(data) {
         `heard ${pad(heard, 8)}${rows.map((r) => r.source.replace('status', '') + (r.location ? '@' + r.location : '')).join(', ')}`
     );
   }
-  const ct = f.conflictingTagDevices;
+  const ct = lf.conflictingTagDevices;
   console.log(`  devices tagged for two different live properties (unattributable, log only): ${ct.length}`);
   for (const x of ct) {
     console.log(
@@ -1938,12 +2060,16 @@ function report(data) {
         `${x.heldByRoom ? 'held by a room (F2 cannot check it)' : 'in no room (not listed or counted)'}`
     );
   }
-  console.log(`  out-of-scope roomstatus rows dropped (D15, log only): ${f.outOfScopeRows.length}`);
-  for (const o of f.outOfScopeRows) console.log(`    sheet row ${o.sheetRow}  Location ${JSON.stringify(o.location)}  room ${o.room}  - ${o.reason}`);
-  console.log(`  rows with a configured Location but no room number, dropped (log only, never fatal): ${f.noRoomRows.length}`);
-  for (const o of f.noRoomRows) console.log(`    sheet row ${o.sheetRow}  Location ${o.location}  status ${o.status || '-'}  DeviceId ${o.deviceId || 'blank'}`);
+  console.log(`  out-of-scope roomstatus rows dropped (D15, log only): ${lf.outOfScopeRows.length}`);
+  for (const o of lf.outOfScopeRows) console.log(`    sheet row ${o.sheetRow}  Location ${JSON.stringify(o.location)}  room ${o.room}  - ${o.reason}`);
+  console.log(`  rows with a configured Location but no room number, dropped (log only, never fatal): ${lf.noRoomRows.length}`);
+  for (const o of lf.noRoomRows) console.log(`    sheet row ${o.sheetRow}  Location ${o.location}  status ${o.status || '-'}  DeviceId ${o.deviceId || 'blank'}`);
 
-  const sh = f.sheetHygiene;
+  const nh = lf.notesNamingOutOfScope;
+  console.log(`  notes naming an out-of-scope site (D7, log only; the note still renders): ${nh.length}`);
+  for (const x of nh) console.log(`    ${pad(where(x), 11)}sheet row ${x.sheetRow}  names ${x.names.map((n) => JSON.stringify(n)).join(', ')}`);
+
+  const sh = lf.sheetHygiene;
   console.log('  sheet hygiene (findings, not asserts):');
   console.log(
     `    heartbeatstatus ids on more than one row: ${sh.heartbeatDuplicateIds.length}` +
@@ -2039,7 +2165,7 @@ module.exports = {
   serialToWallClock, zonedWallClockToUtc, parseSheetDateTime, zonedDate,
   findDuplicateDevices, findLocationTagConflicts, findDeviceIdProblems, parseReplacementNote, resolveNamedUnit,
   findNoteReplacementConflicts, attributeDevice, findLiveButUnmapped, findUnplacedTelemetry, liveTagOf,
-  liveTagInfo, findConflictingTagDevices,
+  liveTagInfo, findConflictingTagDevices, flagRooms, findNotesNamingOutOfScope, PAGE_FINDING_KEYS, LOG_FINDING_KEYS,
 };
 
 if (require.main === module) {

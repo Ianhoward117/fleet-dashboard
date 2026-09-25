@@ -14,7 +14,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const { PROPERTIES, TRENDS } = require('./config');
+const { PROPERTIES, TRENDS, OUT_OF_SCOPE_NAMES } = require('./config');
+const { PAGE_FINDING_KEYS, LOG_FINDING_KEYS } = require('./normalize');
 
 const DATA_FILE = path.join(__dirname, 'data', 'normalized.json');
 const TEMPLATE_FILE = path.join(__dirname, 'template.html');
@@ -90,7 +91,7 @@ function embedJson(value) {
  * Cheap invariants. A dashboard that renders the wrong numbers confidently
  * is the failure mode worth spending code on.
  */
-function assertSane(data) {
+function sanityProblems(data) {
   const problems = [];
 
   if (!data.properties || !data.properties.length) problems.push('no properties in normalized data');
@@ -143,24 +144,8 @@ function assertSane(data) {
     if (batSum !== c.rooms) problems.push(`${p.code}: battery histogram sums to ${batSum}, expected ${c.rooms}`);
   }
 
-  // Out-of-scope sites must never reach the page. 9829 is matched on its
-  // registry tab name rather than the bare number, because a bare "9829"
-  // would false-positive on any device id that happens to contain those hex
-  // digits.
-  //
-  // One field is allowed to name those tabs: alsoInExcludedTabs, the
-  // provenance annotation on a live-but-unmapped device that carries a
-  // current property group. Rather than weaken the check, strip that field
-  // and then scan everything else - and separately assert the field is only
-  // ever used the one way it is permitted to be used.
-  const scrubbed = JSON.parse(JSON.stringify(data));
-  for (const row of (scrubbed.reconciliation && scrubbed.reconciliation.liveButUnmapped) || []) {
-    delete row.alsoInExcludedTabs;
-  }
-  const blob = JSON.stringify(scrubbed);
-  for (const banned of ['The Lab', 'Fort Custer', 'ESA 9829']) {
-    if (blob.includes(banned)) problems.push(`out-of-scope site "${banned}" appears in the payload`);
-  }
+  // The out-of-scope name scan runs on the payload itself, in payloadProblems:
+  // it has to see exactly what ships, and nothing else.
 
   // A replace-mode override must account for every pair in its file: each one
   // either lands on a roster room or is reported as not being on the roster.
@@ -197,34 +182,96 @@ function assertSane(data) {
     );
   }
 
-  if (problems.length) {
-    throw new Error(
-      `RENDER FAILED - normalized data failed its own consistency checks:\n` +
-        problems.map((p) => `  - ${p}`).join('\n')
-    );
+  // Page findings must arrive whole: the Reconciliation summary reads every
+  // one of these keys, and a missing list would read as "nothing found".
+  const f = data.findings || {};
+  const absent = PAGE_FINDING_KEYS.filter((k) => !(k in f));
+  if (absent.length) problems.push(`page findings missing from normalized data: ${absent.join(', ')}`);
+  for (const r of flat) {
+    if (!Array.isArray(r.flags)) {
+      problems.push(`${r.property}/${r.room}: room row carries no flags list`);
+      break;
+    }
   }
+
+  return problems;
 }
 
-function render() {
-  if (!fs.existsSync(DATA_FILE)) {
-    throw new Error(`RENDER FAILED: missing ${DATA_FILE}\n  Run normalize.js first (or let build.js do it).`);
-  }
-  const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  assertSane(data);
+/**
+ * Only the room fields the page actually reads are sent. roomKey and sheetRow
+ * are internal join keys, and calibrationRisk stays in the data and off the
+ * page; all of them remain in data/normalized.json for analysis.
+ */
+const PAGE_FIELDS = [
+  'property', 'propertyName', 'room', 'deviceName', 'deviceId', 'status',
+  'lastHeartbeat', 'daysSilent', 'heartbeatBucket', 'battery', 'batteryClass',
+  'batteryTimestamp', 'batteryAgeDays',
+  'actionItem', 'actionType', 'notes', 'flags',
+];
 
+/**
+ * Free text: what a person typed into the sheet, which the page shows as
+ * written. D7 exempts exactly these paths from the fatal out-of-scope name
+ * scan - a note naming "The Lab" is a logged finding and still renders.
+ * Everything else in the payload is a structured field, including Action
+ * Item, device names, groups, DeviceId values and every generated sentence.
+ */
+function blankFreeText(payload) {
+  for (const r of payload.rooms || []) r.notes = null;
+  const dup = (payload.reconciliation && payload.reconciliation.duplicateRoomRows) || [];
+  for (const d of dup) for (const e of d.entries || []) e.notes = null;
+  return payload;
+}
+
+/** The page's copy of the findings: page keys only, notes left on their room rows. */
+function pageFindings(findings) {
+  const out = {};
+  for (const k of PAGE_FINDING_KEYS) {
+    const v = findings[k];
+    // F4's note is the room's own note; the room row already carries it, and
+    // one copy keeps free text in one place for the D7 scan.
+    out[k] = k === 'f4' || k === 'f4Unnamed' ? v.map(({ note: _note, ...rest }) => rest) : v;
+  }
+  return out;
+}
+
+/** Every object key anywhere in a value, for the log-finding leak check. */
+function keysIn(value, into = new Set()) {
+  if (Array.isArray(value)) for (const v of value) keysIn(v, into);
+  else if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) {
+      into.add(k);
+      keysIn(v, into);
+    }
+  }
+  return into;
+}
+
+/**
+ * What must never ship, checked on exactly what does.
+ *
+ *   - An out-of-scope site name in any STRUCTURED field fails the build (D7).
+ *     Notes are free text and exempt: a hit there is a log finding, written by
+ *     normalize.js, and the note renders as written.
+ *   - No log-only finding may reach the page, under any key, at any depth.
+ */
+function payloadProblems(payload) {
+  const problems = [];
+  const structured = JSON.stringify(blankFreeText(JSON.parse(JSON.stringify(payload))));
+  for (const name of OUT_OF_SCOPE_NAMES) {
+    if (structured.includes(name)) problems.push(`out-of-scope site "${name}" appears in a structured field of the payload`);
+  }
+  const keys = keysIn(payload);
+  const leaked = LOG_FINDING_KEYS.filter((k) => keys.has(k));
+  if (leaked.length) problems.push(`log-only finding(s) reached the payload: ${leaked.join(', ')}`);
+  return problems;
+}
+
+/** The embedded page data, built from normalized data and the history records to ship. */
+function buildPayload(data, history) {
   // Ship one flat array of every room and let the browser derive the triage
   // queue from it. Sending both would duplicate every triage row inside the
   // room rows for no benefit.
-  //
-  // Only the fields the page actually reads are sent. roomKey is an internal
-  // join key, and the shower/registry columns are not shown anywhere; all of
-  // them remain in data/normalized.json for analysis.
-  const PAGE_FIELDS = [
-    'property', 'propertyName', 'room', 'deviceName', 'deviceId', 'status',
-    'lastHeartbeat', 'daysSilent', 'heartbeatBucket', 'battery', 'batteryClass',
-    'batteryTimestamp', 'batteryAgeDays',
-    'actionItem', 'actionType', 'notes',
-  ];
   const rooms = data.properties.flatMap((p) =>
     p.rooms.map((r) => {
       const slim = {};
@@ -233,21 +280,42 @@ function render() {
     })
   );
 
-  const payload = {
+  return {
     builtAt: data.builtAt,
     // Heartbeats are read live at build time, so one stamp covers the fleet.
     heartbeatsAsOf: data.heartbeatsAsOf,
+    // The OLDEST per-property sheet export stamp (D5); each card has its own.
+    sheetExportAsOf: data.sheetExportAsOf === undefined ? null : data.sheetExportAsOf,
     // Counts only - no tab names, no device detail for out-of-scope hardware.
     particle: data.particle,
     thresholds: data.thresholds,
     rooms,
     reconciliation: data.reconciliation,
+    // F1-F4 and F2's coverage. data.logFindings is never read here.
+    findings: pageFindings(data.findings),
     properties: data.properties.map(({ rooms: _rooms, ...rest }) => rest),
-    history: loadHistory(),
+    history,
     // Window length and fleet-series annotations. Editing trends is a
     // config.js job, not a template.html job.
     trends: TRENDS,
   };
+}
+
+function fail(what, problems) {
+  if (!problems.length) return;
+  throw new Error(`RENDER FAILED - ${what}:\n` + problems.map((p) => `  - ${p}`).join('\n'));
+}
+
+function render() {
+  if (!fs.existsSync(DATA_FILE)) {
+    throw new Error(`RENDER FAILED: missing ${DATA_FILE}\n  Run normalize.js first (or let build.js do it).`);
+  }
+  const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  fail('normalized data failed its own consistency checks', sanityProblems(data));
+
+  const payload = buildPayload(data, loadHistory());
+  fail('the page payload carries something it must not', payloadProblems(payload));
+  const rooms = payload.rooms;
 
   let html = fs.readFileSync(TEMPLATE_FILE, 'utf8');
   for (const token of ['{{DATA_JSON}}', '{{LOGO_DATA_URI}}']) {
@@ -290,7 +358,7 @@ function render() {
   return OUT_FILE;
 }
 
-module.exports = { render, OUT_FILE };
+module.exports = { render, OUT_FILE, buildPayload, payloadProblems, sanityProblems, PAGE_FIELDS };
 
 if (require.main === module) {
   try {

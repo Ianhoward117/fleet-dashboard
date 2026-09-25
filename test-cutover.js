@@ -531,6 +531,110 @@ t('F4 classifies: agrees / shows another unit / blank / unresolvable; unnamed ap
 });
 
 // ===========================================================================
+console.log('\nPER-ROOM FLAGS AND THE FINDINGS SPLIT (Block 3)');
+
+// Rooms as normalize builds them, with the sheet row they came from.
+const roomRec = (property, room, sheetRow, deviceId, deviceName, extra = {}) => ({
+  property, room: String(room), roomKey: String(room).toLowerCase(), sheetRow, deviceId, deviceName, ...extra,
+});
+t('findings carry the sheet row they came from (F2, F3, F4)', () => {
+  const { byId, byName } = indexDevices([dev(1, 'P2-0433', ['esa_6178']), dev(2, 'P2-0556')]);
+  const rows = [
+    row('9502', 308, hex(1), { sheetRow: 250 }),
+    row('6178', 330, null, { sheetRow: 60, deviceIdProblem: 'sheet error', deviceIdRaw: '#REF!' }),
+    row('6178', 101, null, { sheetRow: 3, notes: 'Replaced with P2-0556 on 09/23/26.' }),
+  ];
+  assert.deepStrictEqual(keep(N.findLocationTagConflicts(rows, byId, LIVE).findings.map((f) => f.sheetRow)), [250]);
+  assert.deepStrictEqual(N.findDeviceIdProblems(rows, byId).map((f) => f.sheetRow), [60]);
+  assert.deepStrictEqual(N.findNoteReplacementConflicts(rows, byName).findings.map((f) => f.sheetRow), [3]);
+});
+t('flags attach to the exact room row, in plain language', () => {
+  const { byId, byName } = indexDevices([
+    dev(1, 'P2-0433', ['esa_6178']), dev(2, 'P2-0556'), dev(3, 'P2-0615'), dev(4, 'P2-0564'), dev(5, 'P-0823'),
+  ]);
+  const rows = [
+    row('6178', 428, hex(1), { sheetRow: 40 }),
+    row('9502', 308, hex(1), { sheetRow: 250 }),
+    row('6178', 101, hex(3), { sheetRow: 3, notes: 'Replaced with P2-0556 on 09/23/26.' }),
+    row('6178', 116, null, { sheetRow: 8, notes: 'Replaced with P2-0564 on 09/23/26.' }),
+    row('6178', 418, hex(5), { sheetRow: 30, notes: 'Flashing red LED - replaced with P2-0823 on 9/16.' }),
+    row('6178', 302, null, { sheetRow: 20, notes: 'Replaced device on 9/23/26.' }),
+    row('6178', 330, null, { sheetRow: 60, deviceIdProblem: 'sheet error', deviceIdRaw: '#REF!' }),
+    row('6178', 331, null, { sheetRow: 61, deviceIdProblem: 'malformed', deviceIdRaw: 'TBD' }),
+    row('6197', 101, hex(2), { sheetRow: 70 }),
+  ];
+  const f4 = N.findNoteReplacementConflicts(rows, byName);
+  const findings = {
+    f1: N.findDuplicateDevices(rows, byId),
+    f2: N.findLocationTagConflicts(rows, byId, LIVE).findings,
+    f3: N.findDeviceIdProblems(rows, byId),
+    f4: f4.findings,
+    f4Unnamed: f4.unnamed,
+  };
+  const rooms = rows.map((r) => roomRec(r.property, r.room.display, r.sheetRow, r.deviceId, N.roomHeartbeat(r, byId, BUILT).deviceName));
+  N.flagRooms(rooms, findings);
+  const flagsOf = (p, rm) => rooms.find((x) => x.property === p && x.room === String(rm)).flags;
+  assert.deepStrictEqual(keep(flagsOf('6178', 428)), [
+    { code: 'F1', text: 'P2-0433 is also listed in 9502/308, another property' },
+  ]);
+  assert.deepStrictEqual(keep(flagsOf('9502', 308)), [
+    { code: 'F1', text: 'P2-0433 is also listed in 6178/428, another property' },
+    { code: 'F2', text: 'P2-0433 is tagged esa_6178 in Particle, which belongs to 6178' },
+  ]);
+  assert.deepStrictEqual(keep(flagsOf('6178', 101)), [{ code: 'F4', text: 'note names P2-0556; DeviceId shows P2-0615' }]);
+  assert.deepStrictEqual(flagsOf('6178', 116), [{ code: 'F4', text: 'note names P2-0564; DeviceId is blank' }]);
+  assert.deepStrictEqual(keep(flagsOf('6178', 418)), [
+    { code: 'F4', text: 'note names P2-0823, which matches no Particle device name exactly; DeviceId shows P-0823' },
+  ]);
+  assert.deepStrictEqual(keep(flagsOf('6178', 302)), [
+    { code: 'F4', unnamed: true, text: 'note records a replacement but names no unit; DeviceId is blank' },
+  ]);
+  assert.deepStrictEqual(keep(flagsOf('6178', 330)), [{ code: 'F3', text: 'DeviceId holds the spreadsheet error #REF!' }]);
+  assert.deepStrictEqual(flagsOf('6178', 331), [{ code: 'F3', text: 'DeviceId "TBD" is not a Particle device id' }]);
+  assert.deepStrictEqual(flagsOf('6197', 101), [], 'an unflagged room carries an empty list, not undefined');
+});
+t('a duplicate room row is flagged only on the row the finding names', () => {
+  const { byName } = indexDevices([dev(1, 'P2-0001'), dev(2, 'P2-0002')]);
+  const rows = [
+    row('6178', 101, hex(1), { sheetRow: 3, notes: 'Replaced with P2-0002 on 09/23/26.' }),
+    row('6178', 101, hex(1), { sheetRow: 4, notes: 'Replaced batteries recently.' }),
+  ];
+  const rooms = rows.map((r) => roomRec(r.property, r.room.display, r.sheetRow, r.deviceId, 'P2-0001'));
+  N.flagRooms(rooms, { f4: N.findNoteReplacementConflicts(rows, byName).findings });
+  assert.deepStrictEqual(rooms.map((r) => r.flags.length), [1, 0]);
+});
+t('F1 flags only the rows holding the duplicated device', () => {
+  const rows = [row('6197', 101, hex(1)), row('6197', 102, hex(1)), row('6197', 102, hex(2))];
+  const rooms = rows.map((r, i) => roomRec(r.property, r.room.display, i + 3, r.deviceId, r.deviceId === hex(1) ? 'A' : 'B'));
+  N.flagRooms(rooms, { f1: N.findDuplicateDevices(rows) });
+  assert.deepStrictEqual(keep(rooms.map((r) => r.flags.map((f) => f.text))), [
+    ['A is also listed in 6197/102'], ['A is also listed in 6197/101'], [],
+  ]);
+});
+t('D7: a note naming an out-of-scope site is a log finding, matched as written', () => {
+  const rows = [
+    row('6178', 101, null, { sheetRow: 3, notes: 'Unit came back from The Lab on 9/1.' }),
+    row('6178', 102, null, { sheetRow: 4, notes: 'Spare sent to Fort Custer; ESA 9829 unit reused.' }),
+    row('6178', 103, null, { sheetRow: 5, notes: 'the lab bench (lower case is not the site name)' }),
+    row('6178', 104, null, { sheetRow: 6, notes: null }),
+  ];
+  const hits = N.findNotesNamingOutOfScope(rows, ['The Lab', 'Fort Custer', 'ESA 9829']);
+  assert.deepStrictEqual(keep(hits.map((h) => [h.property, h.room, h.sheetRow, h.names])), [
+    ['6178', '101', 3, ['The Lab']],
+    ['6178', '102', 4, ['Fort Custer', 'ESA 9829']],
+  ]);
+  assert.doesNotThrow(() => N.findNotesNamingOutOfScope([null, {}, { notes: 42 }], ['The Lab']));
+});
+t('the page and log finding keys are disjoint and name every finding normalize writes', () => {
+  const page = new Set(N.PAGE_FINDING_KEYS);
+  assert.ok(N.LOG_FINDING_KEYS.every((k) => !page.has(k)));
+  assert.deepStrictEqual(keep([...N.PAGE_FINDING_KEYS]), ['f1', 'f2', 'f2Coverage', 'f3', 'f4', 'f4Unnamed', 'f4NotesRecognised']);
+  for (const k of ['unplacedTelemetry', 'outOfScopeRows', 'noRoomRows', 'blankRoomstatusRows', 'notesNamingOutOfScope']) {
+    assert.ok(N.LOG_FINDING_KEYS.includes(k), k);
+  }
+});
+
+// ===========================================================================
 console.log('\nATTRIBUTION AND LIVE-BUT-UNMAPPED (§6, D5b)');
 
 const locs = (pairs) => new Map(pairs.map(([n, codes]) => [hex(n), new Set(codes)]));
