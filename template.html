@@ -486,7 +486,8 @@
   var BATTERY_TONES = { ok: 'good', warn: 'warn', critical: 'bad', unknown: 'flat', unclassified: 'flat' };
   var BATTERY_LABELS = { ok: 'Healthy', warn: 'Marginal', critical: 'Critical', unknown: 'No reading', unclassified: 'Unclassified' };
   var STATUS_TONES = { Issue: 'bad', Check: 'warn', Ok: 'good' };
-  var hbBuckets = TH.heartbeatAge.buckets.concat([TH.heartbeatAge.neverBucket]);
+  // "No device" is its own bucket (D11): a blank DeviceId is not a device that never reported.
+  var hbBuckets = TH.heartbeatAge.buckets.concat([TH.heartbeatAge.neverBucket, TH.heartbeatAge.noDeviceBucket]);
   function hbBucketMeta(key) {
     for (var i = 0; i < hbBuckets.length; i++) if (hbBuckets[i].key === key) return hbBuckets[i];
     return { key: key, label: key, tone: 'flat' };

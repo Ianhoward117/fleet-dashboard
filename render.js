@@ -131,8 +131,14 @@ function assertSane(data) {
     if (c.reporting + c.silent !== c.rooms) {
       problems.push(`${p.code}: reporting (${c.reporting}) + silent (${c.silent}) != ${c.rooms} rooms`);
     }
-    const hbSum = Object.values(p.heartbeatHistogram).reduce((a, b) => a + b, 0);
-    if (hbSum !== c.rooms) problems.push(`${p.code}: heartbeat histogram sums to ${hbSum}, expected ${c.rooms}`);
+    // Check the buckets the page actually draws, not just every key: a key the
+    // bars leave out would drop rooms from the card while this sum still passed.
+    const hb = data.thresholds.heartbeatAge;
+    const drawn = hb.buckets.concat([hb.neverBucket, hb.noDeviceBucket]).map((b) => b.key);
+    const undrawn = Object.keys(p.heartbeatHistogram).filter((k) => !drawn.includes(k));
+    if (undrawn.length) problems.push(`${p.code}: heartbeat histogram has bucket(s) the page does not draw: ${undrawn.join(', ')}`);
+    const hbSum = drawn.reduce((a, k) => a + (p.heartbeatHistogram[k] || 0), 0);
+    if (hbSum !== c.rooms) problems.push(`${p.code}: drawn heartbeat buckets sum to ${hbSum}, expected ${c.rooms}`);
     const batSum = Object.values(p.batteryHistogram).reduce((a, b) => a + b, 0);
     if (batSum !== c.rooms) problems.push(`${p.code}: battery histogram sums to ${batSum}, expected ${c.rooms}`);
   }

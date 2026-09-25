@@ -724,7 +724,7 @@ function heartbeatIndex(hbRows, codes) {
  * sheet names that Particle has never heard, does not know, or that is not a
  * device id at all (F3).
  */
-const NO_DEVICE_BUCKET = 'noDevice';
+const NO_DEVICE_BUCKET = THRESHOLDS.heartbeatAge.noDeviceBucket.key;
 
 function roomHeartbeat(row, devicesById, builtAt) {
   const deviceId = row.deviceId || null;

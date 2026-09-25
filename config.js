@@ -173,6 +173,10 @@ const THRESHOLDS = {
     ],
     // Devices with no heartbeat timestamp at all land here instead.
     neverBucket: { key: 'never', label: 'Never', tone: 'bad' },
+    // Rooms whose DeviceId is blank: the sheet names no device, which is a
+    // different statement from a device that has never reported (D11). Not a
+    // cutoff - no threshold moves - and toned like a battery with no reading.
+    noDeviceBucket: { key: 'noDevice', label: 'No device', tone: 'flat' },
   },
 
   /**

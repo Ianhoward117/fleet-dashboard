@@ -307,6 +307,12 @@ t('blank DeviceId -> noDevice, not never', () => {
   assert.strictEqual(h.bucket, 'noDevice');
   assert.strictEqual(h.reporting, false);
 });
+t('the no-device bucket is defined in config, labelled for the page, cutoffs untouched', () => {
+  const { THRESHOLDS: TH } = require('./config');
+  assert.deepStrictEqual(keep(TH.heartbeatAge.noDeviceBucket), { key: 'noDevice', label: 'No device', tone: 'flat' });
+  assert.strictEqual(N.NO_DEVICE_BUCKET, TH.heartbeatAge.noDeviceBucket.key);
+  assert.deepStrictEqual(TH.heartbeatAge.buckets.map((b) => b.maxDays), [2, 7, null]);
+});
 t('a known device never heard -> never; heard 1 d ago -> fresh; 3 d -> aging; 30 d -> stale', () => {
   const { byId } = indexDevices([dev(1, 'A'), dev(2, 'B', [], ago(1)), dev(3, 'C', [], ago(3)), dev(4, 'D', [], ago(30))]);
   const b = (n) => N.roomHeartbeat(row('6197', n, hex(n)), byId, BUILT);
