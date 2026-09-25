@@ -754,6 +754,47 @@ t('an annotation on a day with no record is not drawn (the record carries the st
   assert.ok(!/nothing here/.test(page.html('fleetStrip') + page.html('cards')));
 });
 
+// ===========================================================================
+console.log('\nverify-live.js: what the published page must carry');
+
+const V = require('./verify-live');
+const HTML = '<meta name="robots" content="noindex, nofollow">';
+t('a healthy payload passes', () => {
+  assert.deepStrictEqual(V.pageProblems(HTML, payloadOf(fixture())), { problems: [], notes: [] });
+});
+t('the header stamp and every property stamp must be present; null is a note, not a failure', () => {
+  const p = payloadOf(fixture());
+  delete p.sheetExportAsOf;
+  delete p.properties[1].snapshot.currentTime;
+  p.properties[2].snapshot.currentTime = null;
+  const r = V.pageProblems(HTML, p);
+  assert.deepStrictEqual(keep(r.problems), [
+    'the payload carries no sheetExportAsOf (header) stamp',
+    'property 6178 carries no sheet export stamp (snapshot.currentTime)',
+  ]);
+  assert.deepStrictEqual(r.notes, ['property 9502: the sheet export carried no stamp for it; its card reads "unknown"']);
+});
+t('an unreadable stamp fails', () => {
+  const p = payloadOf(fixture());
+  p.properties[0].snapshot.currentTime = 'Sep 25';
+  assert.strictEqual(V.pageProblems(HTML, p).problems.length, 1);
+});
+t('missing page findings, or any log-only finding key, fail', () => {
+  const p = payloadOf(fixture());
+  delete p.findings.f4;
+  p.reconciliation.notesNamingOutOfScope = [];
+  assert.deepStrictEqual(keep(V.pageProblems(HTML, p).problems), [
+    'page findings missing from the payload: f4',
+    'log-only finding(s) published on the page: notesNamingOutOfScope',
+  ]);
+});
+t('the older checks stand: every property, some rooms, noindex', () => {
+  const p = payloadOf(fixture());
+  p.properties = p.properties.slice(0, 2);
+  p.rooms = [];
+  assert.strictEqual(V.pageProblems('<meta name="robots" content="all">', p).problems.length, 3);
+});
+
 // ---------------------------------------------------------------------------
 console.log('\n' + (fail ? 'FAILED ' : 'ALL PASS ') + pass + ' passed, ' + fail + ' failed');
 // Evidence the zone really changed: the host offset at the export instant.

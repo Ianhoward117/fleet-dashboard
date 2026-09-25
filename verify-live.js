@@ -16,6 +16,8 @@
  */
 
 const { SITE_URL, PROPERTIES } = require('./config');
+// The one list of what the page may and may not carry (CUTOVER.md §9, D7).
+const { PAGE_FINDING_KEYS, LOG_FINDING_KEYS } = require('./normalize');
 
 const num = (name, fallback) => {
   const v = Number(process.env[name]);
@@ -59,7 +61,35 @@ async function probe() {
   const html = await res.text();
   const data = parsePayload(html);
 
+  const builtAt = data.builtAt ? new Date(data.builtAt) : null;
+  const ageMs = builtAt && !isNaN(builtAt) ? Date.now() - builtAt.getTime() : null;
+
+  return { html, data, ageMs, builtAt, rooms: data.rooms ? data.rooms.length : 0 };
+}
+
+/** Every object key anywhere in a value. */
+function keysIn(value, into = new Set()) {
+  if (Array.isArray(value)) for (const v of value) keysIn(v, into);
+  else if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value)) {
+      into.add(k);
+      keysIn(v, into);
+    }
+  }
+  return into;
+}
+
+/**
+ * What a healthy published page carries. Checked only on the build this run
+ * is waiting for: while the previous build is still being served, its shape
+ * is not this run's business - right after a deploy that changes the payload,
+ * the old page would fail every new check.
+ *
+ * Returns { problems, notes }: problems fail the run, notes are only printed.
+ */
+function pageProblems(html, data) {
   const problems = [];
+  const notes = [];
 
   // Every configured property must be on the page.
   const codes = new Set((data.properties || []).map((p) => p.code));
@@ -76,10 +106,32 @@ async function probe() {
     problems.push('the noindex robots meta tag is missing from the published page');
   }
 
-  const builtAt = data.builtAt ? new Date(data.builtAt) : null;
-  const ageMs = builtAt && !isNaN(builtAt) ? Date.now() - builtAt.getTime() : null;
+  // The sheet export stamps (CUTOVER.md §7, D5): the oldest in the header and
+  // one per property card. A null stamp is allowed - the export carried none
+  // and the page says "unknown" - but a missing key means the page lost it.
+  if (!('sheetExportAsOf' in data)) problems.push('the payload carries no sheetExportAsOf (header) stamp');
+  for (const p of data.properties || []) {
+    const snap = p.snapshot;
+    if (!snap || !('currentTime' in snap)) {
+      problems.push(`property ${p.code} carries no sheet export stamp (snapshot.currentTime)`);
+    } else if (snap.currentTime === null) {
+      notes.push(`property ${p.code}: the sheet export carried no stamp for it; its card reads "unknown"`);
+    } else if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(String(snap.currentTime)) || isNaN(Date.parse(snap.currentTime))) {
+      // An ISO instant, as normalize.js writes it. `new Date('Sep 25')` would
+      // happily parse as 2001, so a loose check proves nothing.
+      problems.push(`property ${p.code}: sheet export stamp ${JSON.stringify(snap.currentTime)} is not an ISO date-time`);
+    }
+  }
 
-  return { data, ageMs, builtAt, problems, rooms: data.rooms ? data.rooms.length : 0 };
+  // Page findings arrive whole; log-only findings never arrive at all (D7).
+  const f = data.findings;
+  const absent = f ? PAGE_FINDING_KEYS.filter((k) => !(k in f)) : PAGE_FINDING_KEYS;
+  if (absent.length) problems.push(`page findings missing from the payload: ${absent.join(', ')}`);
+  const keys = keysIn(data);
+  const leaked = LOG_FINDING_KEYS.filter((k) => keys.has(k));
+  if (leaked.length) problems.push(`log-only finding(s) published on the page: ${leaked.join(', ')}`);
+
+  return { problems, notes };
 }
 
 const fmtWait = (ms) => (ms < 60000 ? `${Math.round(ms / 1000)}s` : `${Math.round(ms / 60000)} minutes`);
@@ -95,17 +147,19 @@ async function verifyLive() {
       last = await probe();
       const mins = last.ageMs === null ? null : Math.round(last.ageMs / 60000);
 
-      if (last.problems.length) {
-        throw new Error(
-          `the published page is reachable but wrong:\n` +
-            last.problems.map((p) => `  - ${p}`).join('\n')
-        );
-      }
       const fresh = NEWER_THAN
         ? last.builtAt && last.builtAt > NEWER_THAN
         : last.ageMs !== null && last.ageMs <= MAX_BUILD_AGE_MS;
 
       if (fresh) {
+        const { problems, notes } = pageProblems(last.html, last.data);
+        for (const n of notes) console.log(`VERIFY  note: ${n}`);
+        if (problems.length) {
+          throw new Error(
+            `the published page is reachable but wrong:\n` +
+              problems.map((p) => `  - ${p}`).join('\n')
+          );
+        }
         console.log(
           `VERIFY  ok - published ${mins} min ago, ` +
             `${last.data.properties.length} properties, ${last.rooms} rooms` +
@@ -162,7 +216,7 @@ async function currentBuiltAt() {
   }
 }
 
-module.exports = { verifyLive, currentBuiltAt };
+module.exports = { verifyLive, currentBuiltAt, pageProblems };
 
 if (require.main === module) {
   if (process.argv.includes('--current')) {
