@@ -286,6 +286,30 @@ t('an error CELL in DeviceId survives the sheet reader (sheet_to_json would null
   ]);
   assert.strictEqual(rows[0].sheetRow, 3);
 });
+// Block 3 leftover (Ian, 2026-09-25): a typed placeholder means no device;
+// anything else that is not an id, or a spreadsheet error, is F3.
+t('every typed placeholder means no device, never F3', () => {
+  for (const v of ['NA', 'n/a', 'N/A', 'No device', 'no device in room', 'null', 'undefined', '-', '--', ' No Device ']) {
+    const c = N.readDeviceIdCell(v);
+    assert.deepStrictEqual(c, { id: null, raw: null, problem: null }, JSON.stringify(v));
+    const r = row('6178', 101, null, { deviceIdProblem: c.problem, deviceIdRaw: c.raw });
+    assert.strictEqual(N.findDeviceIdProblems([r], new Map()).length, 0, JSON.stringify(v));
+    assert.strictEqual(N.roomHeartbeat(r, new Map(), BUILT).bucket, 'noDevice', JSON.stringify(v));
+  }
+});
+t('any other non-id text is F3 and buckets never, whatever it looks like', () => {
+  for (const v of ['TBD', 'none', 'No unit', 'P2-0823', 'see note', '0']) {
+    const c = N.readDeviceIdCell(v);
+    assert.strictEqual(c.problem, 'malformed', JSON.stringify(v));
+    const r = row('6178', 101, null, { deviceIdProblem: c.problem, deviceIdRaw: c.raw });
+    assert.deepStrictEqual(keep(N.findDeviceIdProblems([r], new Map()).map((f) => [f.reason, f.value])), [['not a device id', c.raw]]);
+    assert.strictEqual(N.roomHeartbeat(r, new Map(), BUILT).bucket, 'never', JSON.stringify(v));
+  }
+});
+t('a spreadsheet error typed as text is F3 too, not a placeholder', () => {
+  // "#N/A" is also in BAD_TOKENS; the error test must win so it never reads as blank.
+  for (const v of ['#N/A', '#n/a', '#REF!']) assert.strictEqual(N.readDeviceIdCell(v).problem, 'sheet error', v);
+});
 t('malformed values are kept for the finding and never joined', () => {
   for (const v of ['P2-0433', '0a10aced202194944a017d1', '0a10aced202194944a017d188', '0a10aced202194944a017dzz']) {
     const c = N.readDeviceIdCell(v);
@@ -402,7 +426,7 @@ t('the anchored regex rejects baseline_6_shelves_esa_wifi_spi', () => {
   const r = N.findLocationTagConflicts([row('6178', 101, hex(1))], indexDevices([d]).byId, LIVE);
   assert.strictEqual(r.findings.length, 0);
   assert.deepStrictEqual(keep(r.coverage['6178']), {
-    deviceRows: 1, checkable: 0, untagged: 1, untaggedBaseline: 1, unknownToParticle: 0, pctCheckable: 0,
+    deviceRows: 1, checkable: 0, untagged: 1, untaggedBaseline: 1, unknownToParticle: 0, conflictingTags: 0, pctCheckable: 0,
   });
 });
 t('a tag for a property the page does not render is not a live tag', () => {
@@ -415,7 +439,19 @@ t('coverage is reported per property, blind spot included', () => {
   const { byId } = indexDevices([dev(1, 'A', ['esa_9502']), dev(2, 'B', []), dev(3, 'C', ['baseline_6_shelves'])]);
   const rows = [row('9502', 1, hex(1)), row('9502', 2, hex(2)), row('9502', 3, hex(3)), row('9502', 4, hex(9)), row('9502', 5, null)];
   const c = N.findLocationTagConflicts(rows, byId, LIVE).coverage['9502'];
-  assert.deepStrictEqual(keep(c), { deviceRows: 4, checkable: 1, untagged: 2, untaggedBaseline: 1, unknownToParticle: 1, pctCheckable: 25 });
+  assert.deepStrictEqual(keep(c), {
+    deviceRows: 4, checkable: 1, untagged: 2, untaggedBaseline: 1, unknownToParticle: 1, conflictingTags: 0, pctCheckable: 25,
+  });
+});
+// Block 3 leftover (Ian, 2026-09-25): two DIFFERENT live-property groups make a
+// device unattributable, as D5b does for two Locations. F2 cannot check it.
+t('two different live tags: F2 cannot check the device, and says so in coverage', () => {
+  const { byId } = indexDevices([dev(1, 'X', ['esa_6178', 'esa_9502']), dev(2, 'Y', ['esa_6178', 'esa-6178-non-spi'])]);
+  const r = N.findLocationTagConflicts([row('9502', 1, hex(1)), row('9502', 2, hex(2))], byId, LIVE);
+  assert.deepStrictEqual(keep(r.findings.map((f) => [f.room, f.tagProperty])), [['2', '6178']], 'same property twice still attributes');
+  assert.deepStrictEqual(keep(r.coverage['9502']), {
+    deviceRows: 2, checkable: 1, untagged: 0, untaggedBaseline: 0, unknownToParticle: 0, conflictingTags: 1, pctCheckable: 50,
+  });
 });
 
 // ===========================================================================
@@ -514,6 +550,35 @@ t('D5b: untagged with more than one Location is unattributable', () => {
 });
 t('untagged with a Location outside the fleet is unattributable', () => {
   assert.strictEqual(N.attributeDevice(dev(1, 'A', ['esa_9829']), locs([[1, ['9829']]]), LIVE), null);
+});
+t('the first live tag attributes; a non-live esa_ group before it is skipped', () => {
+  const a = N.attributeDevice(dev(1, 'A', ['esa_9829', 'esa-6178-non-spi', 'esa_6178']), locs([]), LIVE);
+  assert.deepStrictEqual(keep(a), { property: '6178', via: 'tag', group: 'esa-6178-non-spi' });
+});
+t('two different live tags: unattributable, and never rescued by heartbeatstatus.Location', () => {
+  const d = dev(1, 'X', ['esa_6178', 'baseline_6_shelves', 'esa-9502-non-spi']);
+  assert.strictEqual(N.attributeDevice(d, locs([[1, ['9502']]]), LIVE), null);
+  assert.deepStrictEqual(keep(N.liveTagInfo(d, LIVE)), {
+    tag: null, conflict: ['6178', '9502'], groups: ['esa_6178', 'esa-9502-non-spi'],
+  });
+  assert.strictEqual(N.liveTagOf(d, LIVE), null);
+});
+t('two live tags: neither listed nor counted as live-but-unmapped, and logged', () => {
+  const devices = [
+    dev(1, 'two-tags', ['esa_6178', 'esa_9502'], ago(0.2)),
+    dev(2, 'two-tags-stale', ['esa_6197', 'esa_9502'], ago(40)),
+    dev(3, 'held-two-tags', ['esa_6197', 'esa_6178'], ago(0.1)),
+    dev(4, 'ok', ['esa_6178', 'esa-6178-non-spi'], ago(0.2)),
+  ];
+  const r = N.findLiveButUnmapped(devices, new Set([hex(3)]), locs([[1, ['6178']]]), PROPS, BUILT, 7);
+  assert.deepStrictEqual(keep(r.rows.map((x) => x.deviceName)), ['ok']);
+  assert.strictEqual(r.stale, 0, 'an unattributable stale device is not counted either');
+  const logged = N.findConflictingTagDevices(devices, new Set([hex(3)]), LIVE);
+  assert.deepStrictEqual(keep(logged.map((x) => [x.deviceName, x.conflict.join('+'), x.heldByRoom])), [
+    ['two-tags', '6178+9502', false],
+    ['two-tags-stale', '6197+9502', false],
+    ['held-two-tags', '6178+6197', true],
+  ]);
 });
 t('live-but-unmapped: held devices skipped, unattributable never listed or counted, fleet = sum', () => {
   const devices = [

@@ -267,17 +267,32 @@ function particleGroupCode(device) {
 const groupsOf = (device) => (device && Array.isArray(device.groups) ? device.groups.map(String) : []);
 
 /**
- * First esa_#### / esa-#### group naming a LIVE property. The regex is
- * anchored, so "baseline_6_shelves_esa_wifi_spi" is not a tag; a tag for a
- * property this dashboard does not render (esa_9829) is not a live tag.
+ * A device's live-property esa_ tag. The regex is anchored, so
+ * "baseline_6_shelves_esa_wifi_spi" is not a tag, and a tag for a property this
+ * dashboard does not render (esa_9829) is not a live tag.
+ *
+ * The first esa_#### / esa-#### group naming a live property is the tag;
+ * several groups naming the SAME property agree. Groups naming two DIFFERENT
+ * live properties are a conflict: the device is unattributable, as D5b treats
+ * two heartbeatstatus Locations, and the caller logs it (Ian, 2026-09-25).
  */
-function liveTagOf(device, liveCodes) {
+function liveTagInfo(device, liveCodes) {
+  let first = null;
+  const codes = new Set();
+  const groups = [];
   for (const g of groupsOf(device)) {
-    const m = /^esa[-_](\d{4})/i.exec(String(g));
-    if (m && liveCodes.has(m[1])) return { code: m[1], group: String(g) };
+    const m = /^esa[-_](\d{4})/i.exec(g);
+    if (!m || !liveCodes.has(m[1])) continue;
+    codes.add(m[1]);
+    groups.push(g);
+    if (!first) first = { code: m[1], group: g };
   }
-  return null;
+  if (codes.size > 1) return { tag: null, conflict: [...codes].sort(), groups };
+  return { tag: first, conflict: null };
 }
+
+/** The live-property tag, or null when there is none or the device carries two (see liveTagInfo). */
+const liveTagOf = (device, liveCodes) => liveTagInfo(device, liveCodes).tag;
 
 // ---------------------------------------------------------------------------
 // Sheet time (D4)
@@ -792,15 +807,23 @@ function findLocationTagConflicts(rows, devicesById, liveCodes) {
   const coverage = {};
   for (const r of rows || []) {
     if (!r || !r.deviceId) continue;
-    const c = coverage[r.property] ||
-      (coverage[r.property] = { deviceRows: 0, checkable: 0, untagged: 0, untaggedBaseline: 0, unknownToParticle: 0, pctCheckable: null });
+    const c = coverage[r.property] || (coverage[r.property] = {
+      deviceRows: 0, checkable: 0, untagged: 0, untaggedBaseline: 0, unknownToParticle: 0, conflictingTags: 0, pctCheckable: null,
+    });
     c.deviceRows++;
     const d = devicesById ? devicesById.get(r.deviceId) : null;
     if (!d) {
       c.unknownToParticle++;
       continue;
     }
-    const tag = liveTagOf(d, liveCodes);
+    const info = liveTagInfo(d, liveCodes);
+    // Tags for two different live properties: there is no one property to
+    // compare Location with, so the row cannot be checked (logged elsewhere).
+    if (info.conflict) {
+      c.conflictingTags++;
+      continue;
+    }
+    const tag = info.tag;
     if (!tag) {
       c.untagged++;
       if (groupsOf(d).some((g) => /^baseline_/i.test(g))) c.untaggedBaseline++;
@@ -916,10 +939,15 @@ function findNoteReplacementConflicts(rows, devicesByName) {
  * else its heartbeatstatus Location. Never the registry, never a bare room
  * number. An untagged device heartbeatstatus places in more than one Location
  * is unattributable (D5b), as is one it places in none or outside the fleet.
+ * So is a device tagged for two different live properties - and that one is
+ * NOT then placed by Location: its own tags contradict each other, and the
+ * export's opinion does not settle which is right.
  * Unattributable means neither listed nor counted anywhere.
  */
 function attributeDevice(device, locationsById, liveCodes) {
-  const tag = liveTagOf(device, liveCodes);
+  const info = liveTagInfo(device, liveCodes);
+  if (info.conflict) return null;
+  const tag = info.tag;
   if (tag) return { property: tag.code, via: 'tag', group: tag.group };
   const locs = device && locationsById ? locationsById.get(String(device.id).toLowerCase()) : null;
   if (!locs || locs.size !== 1) return null;
@@ -969,6 +997,32 @@ function findLiveButUnmapped(devices, heldIds, locationsById, properties, builtA
   }
   rows.sort((a, b) => (a.ageDays === null ? 1 : b.ageDays === null ? -1 : a.ageDays - b.ageDays));
   return { rows, byProperty, stale };
+}
+
+/**
+ * Every Particle device tagged for two different live properties. A finding
+ * for the build log only: such a device is unattributable, so it is never
+ * listed or counted as live-but-unmapped, and F2 cannot check a room holding
+ * it. heldByRoom says whether some roomstatus row names it.
+ */
+function findConflictingTagDevices(devices, heldIds, liveCodes) {
+  const out = [];
+  for (const d of devices || []) {
+    if (!d || !d.id) continue;
+    const info = liveTagInfo(d, liveCodes);
+    if (!info.conflict) continue;
+    const id = String(d.id).toLowerCase();
+    out.push({
+      deviceId: id,
+      deviceIdShort: shortId(id),
+      deviceName: d.name ? String(d.name) : null,
+      groups: info.groups,
+      conflict: info.conflict,
+      heldByRoom: Boolean(heldIds && heldIds.has(id)),
+      lastHeard: d.last_heard || null,
+    });
+  }
+  return out;
 }
 
 /**
@@ -1663,6 +1717,7 @@ function normalize() {
     f4NotesRecognised: f4.recognised,
     // Log-only (D10, D15). Never a page list, and never counted on the page.
     unplacedTelemetry: findUnplacedTelemetry(src.battery, src.heartbeat, heldIds, particle.byId, hb.locationsById, liveCodes),
+    conflictingTagDevices: findConflictingTagDevices(particle.devices, heldIds, liveCodes),
     outOfScopeRows: part.outOfScope,
     noRoomRows: part.noRoom,
     blankRoomstatusRows: src.rooms.blank,
@@ -1838,7 +1893,8 @@ function report(data) {
   for (const [code, c] of Object.entries(f.f2Coverage)) {
     console.log(
       `    ${pad(code, 6)}${c.checkable}/${c.deviceRows} = ${c.pctCheckable}%   untagged ${c.untagged}` +
-        ` (${c.untaggedBaseline} baseline_*)   unknown to Particle ${c.unknownToParticle}`
+        ` (${c.untaggedBaseline} baseline_*)   unknown to Particle ${c.unknownToParticle}` +
+        (c.conflictingTags ? `   tagged for two properties ${c.conflictingTags}` : '')
     );
   }
   console.log(`  F3 DeviceId not an id, or unknown to Particle: ${f.f3.length}`);
@@ -1872,6 +1928,14 @@ function report(data) {
       `    ${pad(u.deviceName || '-', 9)}...${pad(u.deviceIdShort, 8)}${pad(u.groups.join('+') || '(no group)', 34)}` +
         `${pad(a ? a.property + (a.via === 'tag' ? ' (tag)' : ' (export Location)') : 'unattributable', 24)}` +
         `heard ${pad(heard, 8)}${rows.map((r) => r.source.replace('status', '') + (r.location ? '@' + r.location : '')).join(', ')}`
+    );
+  }
+  const ct = f.conflictingTagDevices;
+  console.log(`  devices tagged for two different live properties (unattributable, log only): ${ct.length}`);
+  for (const x of ct) {
+    console.log(
+      `    ${pad(x.deviceName || '-', 9)}...${pad(x.deviceIdShort, 8)}${pad(x.groups.join('+'), 34)}` +
+        `${x.heldByRoom ? 'held by a room (F2 cannot check it)' : 'in no room (not listed or counted)'}`
     );
   }
   console.log(`  out-of-scope roomstatus rows dropped (D15, log only): ${f.outOfScopeRows.length}`);
@@ -1975,6 +2039,7 @@ module.exports = {
   serialToWallClock, zonedWallClockToUtc, parseSheetDateTime, zonedDate,
   findDuplicateDevices, findLocationTagConflicts, findDeviceIdProblems, parseReplacementNote, resolveNamedUnit,
   findNoteReplacementConflicts, attributeDevice, findLiveButUnmapped, findUnplacedTelemetry, liveTagOf,
+  liveTagInfo, findConflictingTagDevices,
 };
 
 if (require.main === module) {
