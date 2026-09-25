@@ -114,9 +114,13 @@ function assertSane(data) {
   if (derivedTriage !== expectedTriage) {
     problems.push(`triage derived from rooms gives ${derivedTriage}, expected ${expectedTriage}`);
   }
-  const missingLastChecked = flat.filter((r) => !('lastChecked' in r)).length;
-  if (missingLastChecked) {
-    problems.push(`${missingLastChecked} room rows are missing lastChecked`);
+  // The per-property "sheet export as of" replaces the per-row lastChecked
+  // copy (D13). Null is allowed - the export may carry none for a property -
+  // but the key must be there, or the stamp silently vanishes from the page.
+  for (const p of data.properties) {
+    if (!p.snapshot || !('currentTime' in p.snapshot)) {
+      problems.push(`${p.code}: snapshot carries no currentTime key`);
+    }
   }
 
   for (const p of data.properties) {
@@ -164,16 +168,27 @@ function assertSane(data) {
     }
   }
 
-  // The annotation is only legitimate on a device whose current group ties it
-  // to a live property. Anything else means the exclusion filter leaked.
+  // Every live-but-unmapped row must be attributed to a live property, by a
+  // live esa_ tag or by the export's Location. An unattributed row would mean
+  // the filter that keeps lab and out-of-scope hardware off the page leaked.
+  // With no unattributed pool, the fleet figure is the sum of the properties.
   const liveCodes = new Set(data.properties.map((p) => p.code));
-  for (const row of (data.reconciliation && data.reconciliation.liveButUnmapped) || []) {
-    if (row.alsoInExcludedTabs && row.alsoInExcludedTabs.length && !liveCodes.has(row.property)) {
+  const lum = (data.reconciliation && data.reconciliation.liveButUnmapped) || [];
+  for (const row of lum) {
+    if (!liveCodes.has(row.property) || !['tag', 'exportLocation'].includes(row.attribution)) {
       problems.push(
-        `device ${row.deviceIdShort} is annotated with an out-of-scope tab but is not ` +
-          `attributed to a live property - the exclusion filter leaked`
+        `live-but-unmapped device ${row.deviceIdShort} is not attributed to a live property ` +
+          `(property ${JSON.stringify(row.property)}, attribution ${JSON.stringify(row.attribution)})`
       );
     }
+  }
+  const q = data.particle || {};
+  const byGroup = Object.values(q.unmappedLiveByGroup || {}).reduce((a, b) => a + b, 0);
+  if (q.unmappedLive !== lum.length || byGroup !== lum.length) {
+    problems.push(
+      `live-but-unmapped lists ${lum.length} devices, but the fleet count is ${q.unmappedLive} ` +
+        `and the properties sum to ${byGroup}`
+    );
   }
 
   if (problems.length) {
@@ -202,7 +217,7 @@ function render() {
     'property', 'propertyName', 'room', 'deviceName', 'deviceId', 'status',
     'lastHeartbeat', 'daysSilent', 'heartbeatBucket', 'battery', 'batteryClass',
     'batteryTimestamp', 'batteryAgeDays',
-    'actionItem', 'actionType', 'lastChecked', 'notes',
+    'actionItem', 'actionType', 'notes',
   ];
   const rooms = data.properties.flatMap((p) =>
     p.rooms.map((r) => {
@@ -248,15 +263,17 @@ function render() {
   const kb = (Buffer.byteLength(html) / 1024).toFixed(1);
   const triageCount = rooms.filter((r) => r.status === 'Issue' || r.status === 'Check').length;
   const recon = payload.reconciliation;
+  // The registry and override lists are gone as of the cutover, so every list
+  // is counted only if present.
+  const reconItems = [
+    'ghosts', 'unregisteredReporters', 'roomDeviceMismatches', 'orphanTelemetryRooms', 'duplicateRoomRows',
+    'liveButUnmapped', 'unknownToParticle', 'overrideRoomsNotInRoster', 'overrideRoomsWithoutDevice',
+    'overrideDiscardedAssignments', 'overrideOverwrittenAssignments', 'overrideRelocatedDevices',
+  ].reduce((n, k) => n + (Array.isArray(recon[k]) ? recon[k].length : 0), 0);
   console.log(`RENDER  wrote dist/index.html  ${kb} KB`);
   console.log(
     `RENDER  ${payload.properties.length} properties, ${rooms.length} rooms, ${triageCount} triage rows, ` +
-      `${recon.ghosts.length + recon.unregisteredReporters.length + recon.roomDeviceMismatches.length +
-        recon.orphanTelemetryRooms.length + recon.duplicateRoomRows.length +
-        recon.liveButUnmapped.length + recon.unknownToParticle.length +
-        recon.overrideRoomsNotInRoster.length + recon.overrideRoomsWithoutDevice.length +
-        recon.overrideDiscardedAssignments.length + recon.overrideOverwrittenAssignments.length +
-        recon.overrideRelocatedDevices.length} reconciliation items`
+      `${reconItems} reconciliation items`
   );
   console.log(
     payload.history.length

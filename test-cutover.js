@@ -600,6 +600,46 @@ t('the snapshot date is the Chicago calendar date', () => {
 });
 
 // ===========================================================================
+console.log('\nDAILY RECORD (§6, §7, §8)');
+
+const { THRESHOLDS } = require('./config');
+const recordOf = (currentTimes, byGroup) =>
+  N.dailyRecord({
+    builtAt: '2026-09-26T11:00:00.000Z',
+    thresholds: THRESHOLDS,
+    particle: { freshWindowDays: 2, unmappedLive: 99, unmappedLiveByGroup: byGroup },
+    triage: [{}, {}],
+    properties: PROPS.map((p, i) => ({
+      code: p.code,
+      counts: { rooms: 10, ok: 7, issue: 2, check: 1, reporting: 9, silent: 1 },
+      heartbeatHistogram: { fresh: 5, aging: 2, stale: 2, never: 0, noDevice: 1 },
+      batteryHistogram: { ok: 8, warn: 1, critical: 1, unclassified: 0, unknown: 0 },
+      snapshot: { currentTime: currentTimes[i] },
+    })),
+  });
+
+t('each property files its export under the Chicago calendar date', () => {
+  const rec = recordOf(['2026-09-26T00:30:00.000Z', '2026-09-25T16:48:31.736Z', null], { 6197: 1 });
+  assert.strictEqual(keep(rec.properties['6197'].snapshot), '2026-09-25'); // 19:30 CDT on the 25th
+  assert.strictEqual(rec.properties['6178'].snapshot, '2026-09-25');
+  assert.strictEqual(rec.properties['9502'].snapshot, null);
+  assert.strictEqual(rec.date, '2026-09-26', 'the record itself is still dated by its build');
+});
+t('fleet unmappedLive is the sum of the properties, whatever the particle total says', () => {
+  const rec = recordOf([null, null, null], { 6197: 1, 9502: 2 });
+  assert.deepStrictEqual(keep(PROPS.map((p) => rec.properties[p.code].unmappedLive)), [1, 0, 2]);
+  assert.strictEqual(rec.unmappedLive, 3);
+});
+t('the record shape does not change', () => {
+  const rec = recordOf([null, null, null], {});
+  assert.deepStrictEqual(Object.keys(rec), ['date', 'builtAt', 'triageRows', 'properties', 'liveUnder2d', 'unmappedLive']);
+  assert.deepStrictEqual(Object.keys(rec.properties['6197']), [
+    'rooms', 'ok', 'issue', 'check', 'reporting', 'silent', 'snapshot', 'battery', 'liveUnder2d', 'unmappedLive',
+  ]);
+  assert.strictEqual(rec.liveUnder2d, 15);
+});
+
+// ===========================================================================
 console.log('\nVALIDATORS NEVER THROW (D5)');
 
 t('garbage in, findings (or nothing) out', () => {

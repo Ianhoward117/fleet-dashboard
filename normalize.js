@@ -1,22 +1,28 @@
 'use strict';
 
 /**
- * Stage 2 of the pipeline: merge registry + telemetry + triage into one
- * clean data/normalized.json, plus the reconciliation lists.
+ * Stage 2 of the pipeline: turn the consolidated workbook and the Particle
+ * device list into one clean data/normalized.json, plus the reconciliation
+ * lists and the sheet findings.
  *
- * Four sources disagree with each other on purpose:
- *   - Room Status          what a human last decided about a room
+ * Sources, as of the cutover (CUTOVER.md §1):
+ *   - roomstatus           rooms, Location, DeviceId, triage, battery voltage
+ *   - batterystatus        battery LastTimestamp, joined by device id only
+ *   - heartbeatstatus      secondary: the per-property "sheet export as of"
+ *                          stamp, and a fallback attribution for unmapped
+ *                          devices - never an assignment
  *   - Particle API         when each device was actually last heard (v2)
- *   - py_export_*          battery voltages, and the room<->device mapping
- *   - registry tabs        what we believe we installed
- * Reconciliation is where those disagreements get written down instead of
- * silently resolved.
  *
- * v2 changed where liveness comes from. Heartbeats are now the Particle
- * device list, read fresh at build time, so days-silent means "vs now" and
- * no longer "vs whenever this property was last exported". Battery, rooms
- * and triage status still come from the sheets: the probe proved battery is
- * not in the Cloud API and no room identifier ever appears in one.
+ * The room -> device chain is roomstatus.DeviceId, and nothing else: no
+ * override, no registry, no heartbeatstatus or battery lookup by room. Sheet
+ * conflicts are findings (F1-F4), written down and never failed on; only
+ * structure - a missing tab or header, an empty property, a row that lands in
+ * two properties - stops the build.
+ *
+ * Heartbeats are the Particle device list, read fresh at build time, so
+ * days-silent means "vs now". Battery, rooms and triage status come from the
+ * sheet: the probe proved battery is not in the Cloud API and no room
+ * identifier ever appears in one.
  *
  * Everything that leaves this file is already normalized: no "NA", no
  * "#N/A", no "No device in room", no 102.0, no raw Date objects.
@@ -25,7 +31,7 @@
 const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
-const { PROPERTIES, THRESHOLDS, EXCLUDED_REGISTRY_TABS, PARTICLE, SHEET_TIME_ZONE } = require('./config');
+const { PROPERTIES, THRESHOLDS, EXCLUDED_REGISTRY_TABS, PARTICLE, SHEET_TIME_ZONE, SOURCE_TABS } = require('./config');
 const PARTICLE_PRODUCT_ID = PARTICLE.productId;
 // The override is a committed source file, not fetched data, so it is read
 // through fetch.js's validator rather than from data/raw/. That way
@@ -114,14 +120,14 @@ const round = (n, p = 2) => (n === null || n === undefined ? null : Math.round(n
 // Sheet helpers
 // ---------------------------------------------------------------------------
 
-function readWorkbook(key, requiredSheets = []) {
+function readWorkbook(key, requiredSheets = [], opts = { cellDates: true }) {
   const file = path.join(RAW_DIR, `${key}.xlsx`);
   if (!fs.existsSync(file)) {
     throw new Error(`NORMALIZE FAILED: missing ${file}\n  Run fetch.js first (or let build.js do it).`);
   }
   let wb;
   try {
-    wb = XLSX.readFile(file, { cellDates: true });
+    wb = XLSX.readFile(file, opts);
   } catch (err) {
     throw new Error(`NORMALIZE FAILED: ${file} could not be parsed as a workbook.\n  ${err.message}`);
   }
@@ -1362,212 +1368,130 @@ function planRoomOverrideMerge(prop, rosterRows, hb, reg, ovByRoom) {
 }
 
 // ---------------------------------------------------------------------------
+// Consolidated workbook: reader
+// ---------------------------------------------------------------------------
+
+// The SHEET_IDS key fetch.js writes as data/raw/consolidated.xlsx.
+const SOURCE_KEY = 'consolidated';
+
+/**
+ * Read the three source tabs. Structure is checked first and is fatal: a
+ * missing tab or a missing required header stops the build here.
+ *
+ * cellDates is OFF on purpose: timestamps must arrive as serials for
+ * parseSheetDateTime, not as Dates SheetJS built in the host zone (D4).
+ */
+function readConsolidated() {
+  const wb = readWorkbook(SOURCE_KEY, SOURCE_TABS, { cellDates: false });
+  const tab = (name, headerRow) => {
+    const ws = wb.Sheets[name];
+    const headers = (XLSX.utils.sheet_to_json(ws, { header: 1, range: headerRow, defval: null, raw: true })[0] || [])
+      .filter((h) => h !== null)
+      .map(String);
+    const K = requireHeaders(name, headers);
+    return { K, rows: XLSX.utils.sheet_to_json(ws, { range: headerRow, defval: null, raw: true }) };
+  };
+  // roomstatus row 1 is a counter formula, not a header, and is never read.
+  // Its header is row 2 (range: 1). The other tabs have theirs on row 1.
+  const rs = tab('roomstatus', 1);
+  const bs = tab('batterystatus', 0);
+  const hs = tab('heartbeatstatus', 0);
+  return {
+    rooms: parseRoomstatusRows(rs.rows, rs.K),
+    battery: parseBatteryRows(bs.rows, bs.K),
+    heartbeat: parseHeartbeatRows(hs.rows, hs.K),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
 function normalize() {
-  const registryTabs = PROPERTIES.filter((p) => p.registryTab).map((p) => p.registryTab);
-  // Exclusion tabs are required too: without them the live-but-unmapped list
-  // would leak lab and 9829 hardware onto the page.
-  const registryWb = readWorkbook('registry', [...registryTabs, ...EXCLUDED_REGISTRY_TABS]);
   const builtAt = new Date();
-
   const particle = readParticleDevices();
-  const excluded = readExcludedDeviceIds(registryWb);
+  const liveCodes = new Set(PROPERTIES.map((p) => p.code));
 
-  // Every device ID this build considers "mapped" to an in-scope room, filled
-  // in as each property is merged. Anything live in the API and absent from
-  // this set is what reconciliation reports as live-but-unmapped.
-  const mappedDeviceIds = new Set();
+  // Structure first. A missing tab or header, a property with no rows, or a
+  // row that lands in more than one property (D16) stops the build here.
+  // Rows outside the three properties are dropped and logged (D15).
+  const src = readConsolidated();
+  const part = partitionRoomRows(src.rooms.rows, PROPERTIES);
+  const bat = batteryIndex(src.battery);
+  const hb = heartbeatIndex(src.heartbeat, PROPERTIES.map((p) => p.code));
+
+  // Every device id a room holds. Anything live in the API and absent from
+  // this set is a candidate for live-but-unmapped.
+  const heldIds = new Set(part.inScope.filter((r) => r.deviceId).map((r) => r.deviceId));
   const unknownToParticle = [];
   let joinAttempted = 0;
   let joinMatched = 0;
 
-  // Committed room-assignment overrides. Validated at load; resolved against
-  // the Particle device list per property below.
-  const roomOverrides = loadRoomOverrides();
-
   const properties = [];
   const triage = [];
-  const ghosts = [];
-  const unregisteredReporters = [];
-  const roomDeviceMismatches = [];
-  const orphanTelemetryRooms = [];
   const duplicateRoomRows = [];
   const notes = [];
 
-  // Override bookkeeping. None of these fail the build - they are the diff a
-  // replace leaves behind, and the diff is the point: it is what the registry
-  // backfill still has to reconcile.
-  const roomOverrideSummaries = [];
-  const overrideRoomsNotInRoster = [];
-  const overrideRoomsWithoutDevice = [];
-  const overrideDiscardedAssignments = [];
-  // Merge-only. A replace cannot produce either: it drops every prior
-  // assignment before it starts, so nothing survives to be overwritten in
-  // place or left behind in a second room.
-  const overrideOverwrittenAssignments = [];
-  const overrideRelocatedDevices = [];
-
   for (const prop of PROPERTIES) {
-    const wb = readWorkbook(prop.sheetKey, WO_SHEETS);
-    const rs = readRoomStatus(wb);
-    const hb = readHeartbeatExport(wb);
-    const bat = readBatteryExport(wb);
-    const reg = prop.registryTab ? readRegistry(registryWb, prop.registryTab) : null;
-
-    // Room assignments for this property may be taken from the committed
-    // override instead of the sheets. Resolution throws on anything it cannot
-    // account for, so by this line the map is either complete or the build is
-    // already over.
-    const ovBlock = roomOverrides.properties[prop.code] || null;
-    const ovResolved = ovBlock ? resolveRoomOverride(prop, ovBlock, particle) : null;
-    const ovReplace = ovBlock && ovBlock.mode === 'replace' ? ovResolved : null;
-    // Merge needs a whole-property view before any row is built, because a
-    // device it places in one room may have to be taken out of another.
-    const ovMergePlan = ovBlock && ovBlock.mode === 'merge'
-      ? planRoomOverrideMerge(prop, rs.rows, hb, reg, ovResolved)
-      : null;
-
-    const currentTime = hb.currentTime;
+    // This property's "sheet export as of" (D5): heartbeatstatus.CurrentTime
+    // for its Location, parsed as Central wall-clock time (D4). Null when the
+    // export carries none for it - which the page reads as unknown.
+    const currentTime = hb.currentTimeByProperty.get(prop.code) || null;
     const snapshotAgeDays = currentTime ? (builtAt - currentTime) / DAY_MS : null;
 
-    // --- merge, room by room, with Room Status as the spine ---------------
     const rooms = [];
-    for (const t of rs.rows) {
-      const key = t.room.key;
-      const tele = hb.byRoom.get(key) || null;
-      const regRec = reg ? reg.byRoom.get(key) || null : null;
-      const ovRec = ovReplace ? ovReplace.get(key) || null : null;
-      // Merge only speaks for rooms it actually touched: an override room, or a
-      // room vacated because its device moved. Everything else falls through to
-      // the untouched sheet path below, byte for byte.
-      const mergeTouched = Boolean(ovMergePlan && ovMergePlan.touched.has(key));
-      const mergeRec = ovMergePlan ? ovMergePlan.assigned.get(key) || null : null;
-
-      // What the sheets alone would have said. Kept even under an override so
-      // the assignments a replace throws away can be listed rather than just
-      // vanishing - that list is the registry backfill's worklist.
-      const priorDeviceId = (tele && tele.deviceId) || (regRec && regRec.deviceId) || null;
-      const priorSource = tele && tele.deviceId ? 'export' : regRec && regRec.deviceId ? 'registry' : null;
-
-      // In replace mode the override IS the assignment layer for this
-      // property: the export's room->device map and the registry's are both
-      // discarded, not merely outranked. A room the override does not list
-      // therefore has no device - which is the honest reading, because the
-      // override is a field-verified map and its silence about a room is not
-      // evidence that a stale sheet had it right.
-      let deviceId;
-      let deviceName;
-      if (ovReplace) {
-        deviceId = (ovRec && ovRec.deviceId) || null;
-        deviceName = (ovRec && ovRec.deviceName) || null;
-      } else if (mergeTouched) {
-        deviceId = mergeRec ? mergeRec.deviceId : null;
-        deviceName = mergeRec ? mergeRec.deviceName : null;
-      } else {
-        deviceId = priorDeviceId;
-        deviceName = t.deviceName || (regRec && regRec.deviceName) || null;
+    for (const t of part.byProperty.get(prop.code)) {
+      // The whole room -> device chain: roomstatus.DeviceId, else no device.
+      // Liveness and the display name are Particle's, by that id (D8).
+      const h = roomHeartbeat(t, particle.byId, builtAt);
+      if (h.deviceId) {
+        joinAttempted++;
+        if (h.known) joinMatched++;
+        else {
+          unknownToParticle.push({
+            property: prop.code,
+            propertyName: prop.name,
+            room: t.room.display,
+            deviceId: h.deviceId,
+            deviceName: null,
+          });
+        }
       }
 
-      if (ovReplace && priorDeviceId && priorDeviceId !== deviceId) {
-        overrideDiscardedAssignments.push({
-          property: prop.code,
-          propertyName: prop.name,
-          room: t.room.display,
-          roomKey: key,
-          discardedFrom: priorSource,
-          discardedDeviceId: priorDeviceId,
-          discardedDeviceIdShort: String(priorDeviceId).slice(-6),
-          discardedDeviceName:
-            (regRec && regRec.deviceId === priorDeviceId ? regRec.deviceName : null) || t.deviceName || null,
-          overrideDeviceName: ovRec ? ovRec.deviceName : null,
-          overrideDeviceId: ovRec ? ovRec.deviceId : null,
-        });
-      }
-
-      // Voltage: prefer the export keyed by device, then by room, then the
-      // human-entered Room Status figure.
-      const batRec =
-        (deviceId && bat.byDevice.get(deviceId)) || bat.byRoom.get(key) || null;
-      const volts = (batRec && batRec.volts !== null ? batRec.volts : t.battery);
-
-      // Battery readings are collected intermittently and their timestamps are
-      // not precise, so this age is reported as approximate on the page. It is
-      // still the honest answer to "how old is this voltage".
+      // The voltage is roomstatus's own lookup of batterystatus. Its age is
+      // batterystatus.LastTimestamp for the same device - by id, never by room.
+      // Readings are collected intermittently and their timestamps are not
+      // precise, so the page reports this age as approximate.
+      const volts = t.battery;
+      const batRec = h.deviceId ? bat.byDevice.get(h.deviceId) || null : null;
       const batteryTimestamp = batRec ? batRec.lastTimestamp : null;
       const batteryAgeDays = batteryTimestamp ? (builtAt - batteryTimestamp) / DAY_MS : null;
-
-      // --- heartbeat: the Particle API is the source of record as of v2 ---
-      // Joined on ParticleDeviceId <-> device.id. The API is a strict superset
-      // of what the exports carry, so a mapped device missing from it is a real
-      // anomaly and gets written down rather than quietly bucketed as silent.
-      if (deviceId) {
-        mappedDeviceIds.add(deviceId);
-        joinAttempted++;
-      }
-      const api = deviceId ? particle.byId.get(deviceId) || null : null;
-      if (deviceId && api) joinMatched++;
-      if (deviceId && !api) {
-        unknownToParticle.push({
-          property: prop.code,
-          propertyName: prop.name,
-          room: t.room.display,
-          deviceId,
-          deviceName,
-        });
-      }
-
-      const lastHeartbeat = api && api.last_heard ? new Date(api.last_heard) : null;
-      const reporting = Boolean(lastHeartbeat && !isNaN(lastHeartbeat));
-      // Measured against build time, because the source is now live. This
-      // deliberately supersedes the old export-relative figure.
-      const daysSilent = reporting ? (builtAt - lastHeartbeat) / DAY_MS : null;
 
       rooms.push({
         property: prop.code,
         propertyName: prop.name,
         room: t.room.display,
-        roomKey: key,
-        deviceName,
-        deviceId,
+        roomKey: t.room.key,
+        deviceName: h.deviceName,
+        deviceId: h.deviceId,
         status: t.status || 'Unknown',
-        reporting,
-        lastHeartbeat: iso(lastHeartbeat),
-        daysSilent: round(daysSilent, 1),
-        heartbeatBucket: bucketByDays(reporting ? daysSilent : null, THRESHOLDS.heartbeatAge),
+        reporting: h.reporting,
+        lastHeartbeat: iso(h.lastHeartbeat),
+        // Measured against build time, because the source is live.
+        daysSilent: round(h.daysSilent, 1),
+        // "noDevice" for a blank DeviceId, "never" for a device never heard
+        // or not known - two statements, kept apart (D11).
+        heartbeatBucket: h.bucket,
         battery: round(volts, 3),
         batteryClass: batteryClass(volts),
         batteryTimestamp: iso(batteryTimestamp),
         batteryAgeDays: round(batteryAgeDays, 1),
-        lastShower: iso(t.lastShower),
-        daysNoShower: round(t.daysNoShower, 1),
         actionItem: t.actionItem,
         actionType: actionType(t.actionItem),
-        // When this property's telemetry was last exported. Days-silent is
-        // measured against this instant, not against today, so showing it on
-        // every row is what makes the figure interpretable.
-        lastChecked: iso(currentTime),
         notes: t.notes,
-        registered: ovReplace ? Boolean(ovRec) : Boolean(regRec),
-        // The override carries no install dates. Under replace that makes this
-        // absent outright; under merge it is absent only where the override
-        // changed the room's device, because the registry's date then refers to
-        // a unit that is no longer the one assigned.
-        installDate:
-          ovReplace || (mergeTouched && !(regRec && deviceId && regRec.deviceId === deviceId))
-            ? null
-            : regRec
-              ? iso(regRec.installDate)
-              : null,
-        // Where this room's device assignment came from. Kept in
-        // normalized.json for analysis; the page reads provenance off the
-        // reconciliation block instead.
-        assignmentSource: deviceId
-          ? ovRec || (mergeTouched && mergeRec && mergeRec.source === 'override')
-            ? 'override'
-            : priorSource
-          : null,
+        // Carried as text. How it is shown is a presentation choice, and no
+        // savings figure is ever derived from it.
+        calibrationRisk: t.calibrationRisk,
       });
     }
 
@@ -1579,10 +1503,10 @@ function normalize() {
         return m;
       }, {});
 
-    // A room can legitimately occupy more than one Room Status row when its
-    // device was swapped: each row carries its own action item and note. We
-    // keep every row (they are separate pieces of triage) but record the
-    // duplication so nobody reads a row count as a room count.
+    // A room can legitimately occupy more than one row when its device was
+    // swapped: each row carries its own action item and note. We keep every
+    // row (they are separate pieces of triage) but record the duplication so
+    // nobody reads a row count as a room count.
     const roomKeyCounts = new Map();
     for (const r of rooms) roomKeyCounts.set(r.roomKey, (roomKeyCounts.get(r.roomKey) || 0) + 1);
     for (const [key, count] of roomKeyCounts) {
@@ -1607,20 +1531,21 @@ function normalize() {
       other: rooms.length - (statusCounts.Ok || 0) - (statusCounts.Issue || 0) - (statusCounts.Check || 0),
       reporting: rooms.filter((r) => r.reporting).length,
       silent: rooms.filter((r) => !r.reporting).length,
-      registryDevices: reg ? reg.byRoom.size : 0,
-      registryInventoryOnly: reg ? reg.inventoryOnly : 0,
+      // Rooms whose DeviceId is blank. Part of `silent`, but a different fact.
+      noDevice: rooms.filter((r) => r.heartbeatBucket === NO_DEVICE_BUCKET).length,
     };
 
     const heartbeatHistogram = {};
     for (const b of THRESHOLDS.heartbeatAge.buckets) heartbeatHistogram[b.key] = 0;
     heartbeatHistogram[THRESHOLDS.heartbeatAge.neverBucket.key] = 0;
+    heartbeatHistogram[NO_DEVICE_BUCKET] = 0;
     for (const r of rooms) heartbeatHistogram[r.heartbeatBucket] = (heartbeatHistogram[r.heartbeatBucket] || 0) + 1;
 
     const batteryHistogram = { ok: 0, warn: 0, critical: 0, unclassified: 0, unknown: 0 };
     for (const r of rooms) batteryHistogram[r.batteryClass] = (batteryHistogram[r.batteryClass] || 0) + 1;
 
-    // Battery age drives the per-property freshness badge as of v2: heartbeats
-    // are live at build time, so battery is the only thing that can go stale.
+    // Battery age drives the per-property freshness badge: heartbeats are
+    // live at build time, so battery is the only thing that can go stale.
     const batteryAges = rooms.map((r) => r.batteryAgeDays).filter((n) => n !== null && n !== undefined);
     const batteryAgeMedian = median(batteryAges);
     const batteryAgeOldest = batteryAges.length ? Math.max(...batteryAges) : null;
@@ -1633,236 +1558,6 @@ function normalize() {
       approximate: true, // collector runs intermittently; timestamps are not precise
     };
 
-    // --- override bookkeeping ---------------------------------------------
-    // A replace is allowed to leave two kinds of gap, and both are reported
-    // rather than papered over:
-    //
-    //   - the override names a room the sheet roster does not carry. No room
-    //     row is invented for it. The roster and the denominators stay
-    //     sheet-owned, so an override can never talk the property's Ok/Issue/
-    //     Check counts up or down; the device simply stays unmapped and shows
-    //     up in the live-but-unmapped list as before.
-    //
-    //   - the roster carries a room the override does not name. That room
-    //     loses its device and reads as never-reporting, which is the honest
-    //     consequence of a field-verified map not listing it.
-    if (ovReplace) {
-      const rosterKeys = new Set(rooms.map((r) => r.roomKey));
-
-      for (const [roomKey, rec] of ovReplace) {
-        if (rosterKeys.has(roomKey)) continue;
-        overrideRoomsNotInRoster.push({
-          property: prop.code,
-          propertyName: prop.name,
-          room: rec.room.display,
-          deviceName: rec.deviceName,
-          deviceId: rec.deviceId,
-          deviceIdShort: String(rec.deviceId).slice(-6),
-        });
-      }
-
-      const seenRoom = new Set();
-      for (const r of rooms) {
-        if (ovReplace.has(r.roomKey) || seenRoom.has(r.roomKey)) continue;
-        seenRoom.add(r.roomKey);
-        overrideRoomsWithoutDevice.push({
-          property: prop.code,
-          propertyName: prop.name,
-          room: r.room,
-          status: r.status,
-        });
-      }
-
-      const mappedRooms = [...ovReplace.keys()].filter((k) => rosterKeys.has(k)).length;
-      roomOverrideSummaries.push({
-        property: prop.code,
-        propertyName: prop.name,
-        mode: ovBlock.mode,
-        source: ovBlock.source,
-        capturedAt: ovBlock.capturedAt,
-        note: ovBlock.note,
-        // Pairs in the file.
-        pairs: ovBlock.rooms.length,
-        // Pairs that landed on a room this dashboard actually renders.
-        mappedRooms,
-        // Pairs whose room is not on the sheet roster, so no row exists to
-        // attach them to.
-        roomsNotInRoster: ovBlock.rooms.length - mappedRooms,
-        // Roster rooms the override does not name, now showing no device.
-        rosterRoomsWithoutDevice: overrideRoomsWithoutDevice.filter((x) => x.property === prop.code).length,
-        // Sheet-derived assignments this replace threw away.
-        discardedAssignments: overrideDiscardedAssignments.filter((x) => x.property === prop.code).length,
-      });
-    }
-
-    // Merge bookkeeping. Nothing here fails the build: every entry is a
-    // difference between the sheets and the field-verified map, and the
-    // difference is exactly what the backfill needs written down.
-    if (ovMergePlan) {
-      // How stale was the device the override displaced? An override that
-      // replaces a unit still reporting hourly is a very different claim from
-      // one replacing a unit silent for months, and the page should say which.
-      const heartbeatOf = (deviceId) => {
-        const api = deviceId ? particle.byId.get(deviceId) || null : null;
-        const heard = api && api.last_heard ? new Date(api.last_heard) : null;
-        const days = heard && !isNaN(heard) ? (builtAt - heard) / DAY_MS : null;
-        return {
-          lastHeard: iso(heard),
-          ageDays: round(days, 1),
-          bucket: bucketByDays(days, THRESHOLDS.heartbeatAge),
-        };
-      };
-
-      for (const rec of ovMergePlan.notInRoster) {
-        overrideRoomsNotInRoster.push({
-          property: prop.code,
-          propertyName: prop.name,
-          room: rec.room.display,
-          deviceName: rec.deviceName,
-          deviceId: rec.deviceId,
-          deviceIdShort: String(rec.deviceId).slice(-6),
-        });
-      }
-
-      for (const o of ovMergePlan.overwritten) {
-        const hbWas = heartbeatOf(o.fromDeviceId);
-        overrideOverwrittenAssignments.push({
-          property: prop.code,
-          propertyName: prop.name,
-          room: o.room,
-          fromDeviceName: o.fromDeviceName,
-          fromDeviceId: o.fromDeviceId,
-          fromDeviceIdShort: String(o.fromDeviceId).slice(-6),
-          fromSource: o.fromSource,
-          fromLastHeard: hbWas.lastHeard,
-          fromAgeDays: hbWas.ageDays,
-          fromBucket: hbWas.bucket,
-          toDeviceName: o.toDeviceName,
-          toDeviceId: o.toDeviceId,
-        });
-      }
-
-      for (const r of ovMergePlan.relocated) {
-        overrideRelocatedDevices.push({
-          property: prop.code,
-          propertyName: prop.name,
-          deviceName: r.deviceName,
-          deviceId: r.deviceId,
-          deviceIdShort: String(r.deviceId).slice(-6),
-          fromRoom: r.fromRoom,
-          fromSource: r.fromSource,
-          toRoom: r.toRoom,
-        });
-      }
-
-      const mappedRooms = ovBlock.rooms.length - ovMergePlan.notInRoster.length;
-      roomOverrideSummaries.push({
-        property: prop.code,
-        propertyName: prop.name,
-        mode: ovBlock.mode,
-        source: ovBlock.source,
-        capturedAt: ovBlock.capturedAt,
-        note: ovBlock.note,
-        pairs: ovBlock.rooms.length,
-        mappedRooms,
-        roomsNotInRoster: ovMergePlan.notInRoster.length,
-        // Rooms whose device the override changed outright.
-        overwritten: ovMergePlan.overwritten.length,
-        // Devices taken out of one room because the override put them in
-        // another. Each one leaves its old room with no device.
-        relocated: ovMergePlan.relocated.length,
-        // Rooms the override does not name and therefore did not touch at all.
-        untouchedRooms: ovMergePlan.rosterKeys.size - ovMergePlan.touched.size,
-      });
-    }
-
-    // --- reconciliation ---------------------------------------------------
-    const telemetryDeviceIds = new Set([...hb.byDevice.keys(), ...bat.byDevice.keys()]);
-    const triageRoomKeys = new Set(rooms.map((r) => r.roomKey));
-
-    if (reg) {
-      // Ghosts: registered placements whose device never appears in telemetry.
-      for (const [, p] of reg.byRoom) {
-        if (!telemetryDeviceIds.has(p.deviceId)) {
-          ghosts.push({
-            property: prop.code,
-            propertyName: prop.name,
-            room: p.room.display,
-            deviceName: p.deviceName,
-            deviceId: p.deviceId,
-            installDate: iso(p.installDate),
-            notes: p.notes,
-          });
-        }
-      }
-      // Unregistered reporters: telemetry devices absent from the registry.
-      for (const id of telemetryDeviceIds) {
-        if (!reg.byDevice.has(id)) {
-          const rec = hb.byDevice.get(id) || bat.byDevice.get(id);
-          unregisteredReporters.push({
-            property: prop.code,
-            propertyName: prop.name,
-            room: rec && rec.room ? rec.room.display : null,
-            deviceId: id,
-            lastHeartbeat: rec && rec.lastHeartbeat ? iso(rec.lastHeartbeat) : null,
-          });
-        }
-      }
-      // Mismatches: registry and telemetry disagree about where a device is,
-      // or about which device occupies a room.
-      for (const [id, p] of reg.byDevice) {
-        const tele = hb.byDevice.get(id);
-        if (tele && tele.room && p.room.key !== tele.room.key) {
-          roomDeviceMismatches.push({
-            property: prop.code,
-            propertyName: prop.name,
-            kind: 'device in a different room than registered',
-            deviceId: id,
-            deviceName: p.deviceName,
-            registryRoom: p.room.display,
-            telemetryRoom: tele.room.display,
-          });
-        }
-      }
-      for (const [key, p] of reg.byRoom) {
-        const tele = hb.byRoom.get(key);
-        if (tele && tele.deviceId && tele.deviceId !== p.deviceId) {
-          roomDeviceMismatches.push({
-            property: prop.code,
-            propertyName: prop.name,
-            kind: 'room occupied by a different device than registered',
-            room: p.room.display,
-            deviceName: p.deviceName,
-            registryDeviceId: p.deviceId,
-            telemetryDeviceId: tele.deviceId,
-          });
-        }
-      }
-    } else {
-      notes.push({
-        property: prop.code,
-        propertyName: prop.name,
-        severity: 'warn',
-        text:
-          `${prop.code} has no tab in the registry workbook, so it cannot be reconciled. ` +
-          `Its ${counts.rooms} rooms are shown from triage and telemetry only; ` +
-          `ghosts and unregistered reporters cannot be computed for this property.`,
-      });
-    }
-
-    // Telemetry reporting from a room that triage does not list as installed.
-    for (const [key, rec] of hb.byRoom) {
-      if (!triageRoomKeys.has(key)) {
-        orphanTelemetryRooms.push({
-          property: prop.code,
-          propertyName: prop.name,
-          room: rec.room ? rec.room.display : key,
-          deviceId: rec.deviceId,
-          lastHeartbeat: iso(rec.lastHeartbeat),
-        });
-      }
-    }
-
     if (counts.rooms !== counts.distinctRooms) {
       const dupList = duplicateRoomRows
         .filter((d) => d.property === prop.code)
@@ -1873,41 +1568,9 @@ function normalize() {
         propertyName: prop.name,
         severity: 'warn',
         text:
-          `Room Status has ${counts.rooms} rows covering ${counts.distinctRooms} distinct rooms. ` +
+          `roomstatus has ${counts.rooms} rows covering ${counts.distinctRooms} distinct rooms. ` +
           `Room(s) ${dupList} appear more than once, each row carrying a different action item. ` +
           `All rows are kept in the triage queue; counts here are row counts, not room counts.`,
-      });
-    }
-
-    // The human header label vs the machine snapshot.
-    let labelMatchesSnapshot = null;
-    if (rs.headerLabel && currentTime) {
-      const labelDate = new Date(rs.headerLabel);
-      labelMatchesSnapshot = !isNaN(labelDate)
-        ? Math.abs(labelDate - currentTime) < 2 * DAY_MS
-        : null;
-      if (labelMatchesSnapshot === false) {
-        notes.push({
-          property: prop.code,
-          propertyName: prop.name,
-          severity: 'warn',
-          text:
-            `Room Status header is labelled "${rs.headerLabel}" but the machine export snapshot is ` +
-            `${currentTime.toISOString().slice(0, 10)}. Freshness badges use the export timestamp; ` +
-            `treat the sheet's own header date as out of date.`,
-        });
-      }
-    }
-
-    if (bat.corruptHeartbeatRows > 0) {
-      notes.push({
-        property: prop.code,
-        propertyName: prop.name,
-        severity: 'info',
-        text:
-          `${bat.corruptHeartbeatRows} of ${bat.rowCount} rows in py_export_batterystatus have a ` +
-          `non-timestamp LastHeartbeat value. That column is ignored; heartbeats come from ` +
-          `py_export_heartbeatstatus instead.`,
       });
     }
 
@@ -1915,14 +1578,12 @@ function normalize() {
       code: prop.code,
       name: prop.name,
       tag: prop.tag,
-      hasRegistry: Boolean(prop.registryTab),
-      hasDeviceColumn: rs.hasDeviceColumn,
       snapshot: {
         currentTime: iso(currentTime),
+        // The Chicago calendar date of that stamp - what the daily record files it under.
+        date: zonedDate(currentTime),
         ageDays: round(snapshotAgeDays, 1),
         bucket: bucketByDays(snapshotAgeDays, THRESHOLDS.snapshotFreshness),
-        headerLabel: rs.headerLabel,
-        labelMatchesSnapshot,
       },
       counts,
       heartbeatHistogram,
@@ -1937,6 +1598,32 @@ function normalize() {
   }
 
   // -------------------------------------------------------------------------
+  // Sheet findings (D5): flagged, never failed on
+  // -------------------------------------------------------------------------
+  const allRows = PROPERTIES.flatMap((p) => part.byProperty.get(p.code));
+  const f2 = findLocationTagConflicts(allRows, particle.byId, liveCodes);
+  const f4 = findNoteReplacementConflicts(allRows, particle.byName);
+  const findings = {
+    f1: findDuplicateDevices(allRows, particle.byId),
+    f2: f2.findings,
+    f2Coverage: f2.coverage,
+    f3: findDeviceIdProblems(allRows, particle.byId),
+    f4: f4.findings,
+    f4Unnamed: f4.unnamed,
+    f4NotesRecognised: f4.recognised,
+    // Log-only (D10, D15). Never a page list, and never counted on the page.
+    unplacedTelemetry: findUnplacedTelemetry(src.battery, src.heartbeat, heldIds, particle.byId, hb.locationsById, liveCodes),
+    outOfScopeRows: part.outOfScope,
+    blankRoomstatusRows: src.rooms.blank,
+    sheetHygiene: {
+      heartbeatDuplicateIds: hb.duplicateIds,
+      heartbeatMultiLocationIds: hb.multiLocationIds,
+      currentTimeSpread: hb.currentTimeSpread,
+      batteryDuplicateIds: bat.duplicates,
+    },
+  };
+
+  // -------------------------------------------------------------------------
   // Fleet-level reconciliation against the Particle device list
   // -------------------------------------------------------------------------
 
@@ -1946,81 +1633,12 @@ function normalize() {
   const freshDays = (hbBuckets.find((b) => b.key === 'fresh') || {}).maxDays || 2;
   const liveDays = (hbBuckets.find((b) => b.key === 'aging') || {}).maxDays || 7;
 
-  const ageOf = (d) => {
-    if (!d.last_heard) return null;
-    const t = new Date(d.last_heard);
-    return isNaN(t) ? null : (builtAt - t) / DAY_MS;
-  };
-
-  /**
-   * Live but unmapped: devices the cloud has heard from recently that do not
-   * correspond to any room we render. At 6178 this is mostly install progress
-   * rather than breakage - see the note attached below.
-   */
-  const liveButUnmapped = [];
-  const unmappedByGroup = {};
-  let unmappedStale = 0;
-  let excludedFiltered = 0;
-  let excludedRecovered = 0;
-
-  for (const d of particle.devices) {
-    if (!d.id) continue;
-    if (mappedDeviceIds.has(d.id)) continue;
-
-    const age = ageOf(d);
-    const isLive = age !== null && age <= liveDays;
-
-    const g = particleGroupCode(d);
-    const prop = g ? PROPERTIES.find((p) => p.code === g.code) : null;
-
-    // Exclusion precedence. The exclusion tabs are transit logs, not rosters:
-    // a device passes across the bench and is later installed at a live
-    // property, and 152 of the 196 ids in the 9829 tab are also in the lab
-    // tab. So membership alone cannot mean "out of scope".
-    //
-    // Rule: a device carrying a LIVE property's esa_ group tag is never
-    // excluded. Its group is current fleet assignment; the tab membership is
-    // history. It stays in the list, annotated with where else it appears.
-    // Anything excluded without such a tag is dropped before it is recorded
-    // and can never reach the page.
-    if (excluded.all.has(d.id) && !prop) {
-      if (isLive) excludedFiltered++;
-      continue;
-    }
-    const alsoInExcludedTabs = excluded.all.has(d.id)
-      ? EXCLUDED_REGISTRY_TABS.filter((t) => excluded.tabSets.get(t).has(d.id))
-      : [];
-    if (alsoInExcludedTabs.length && isLive) excludedRecovered++;
-
-    if (!isLive) {
-      unmappedStale++;
-      continue;
-    }
-    liveButUnmapped.push({
-      property: prop ? prop.code : null, // null = fleet-level pool, no usable group
-      propertyName: prop ? prop.name : null,
-      deviceName: d.name || null,
-      deviceId: d.id,
-      deviceIdShort: String(d.id).slice(-6),
-      group: g ? g.group : null,
-      lastHeard: d.last_heard || null,
-      ageDays: round(age, 1),
-      // Provenance, not scope: this device is live under a current property
-      // group but also appears in one or more historical/out-of-scope tabs.
-      alsoInExcludedTabs,
-    });
-    const bucket = prop ? prop.code : 'fleet';
-    unmappedByGroup[bucket] = (unmappedByGroup[bucket] || 0) + 1;
-  }
-
-  // Freshest first: the newest arrivals are the ones worth chasing.
-  liveButUnmapped.sort((a, b) => (a.ageDays === null ? 1 : b.ageDays === null ? -1 : a.ageDays - b.ageDays));
-
-  // Priya owns the export pipeline; this is her reading of what the list means.
-  const liveUnmappedNote =
-    'Exports include a device only after its first data lands, and 6178 installs ' +
-    'continued into June. Live-but-unmapped at 6178 therefore mostly means ' +
-    '"installed, awaiting registry/export", not failure.';
+  // Live but unmapped (§6): heard within the live window, held by no room,
+  // attributed by a live esa_ tag or else by heartbeatstatus.Location. A
+  // device neither can place is not listed and not counted - which is what
+  // keeps lab and out-of-scope hardware off the page, and why the fleet
+  // figure is the sum of the properties.
+  const lbu = findLiveButUnmapped(particle.devices, heldIds, hb.locationsById, PROPERTIES, builtAt, liveDays);
 
   if (unknownToParticle.length) {
     notes.push({
@@ -2028,29 +1646,26 @@ function normalize() {
       propertyName: null,
       severity: 'warn',
       text:
-        `${unknownToParticle.length} mapped device(s) are absent from the Particle product ` +
-        `device list entirely. The API is a strict superset of the exports, so this should ` +
-        `be zero; these rooms are bucketed as never-reporting and listed in reconciliation.`,
+        `${unknownToParticle.length} DeviceId(s) in roomstatus are absent from the Particle product ` +
+        `device list entirely. The product holds every device ever claimed, so this should be zero; ` +
+        `these rooms are bucketed as never-reporting and listed in reconciliation.`,
     });
   }
 
   const particleSummary = {
     pulledAt: particle.pulledAt,
     fleetDevices: particle.count,
-    mappedDevices: mappedDeviceIds.size,
+    mappedDevices: heldIds.size,
     joinAttempted,
     joinMatched,
     joinRatePct: joinAttempted ? round((joinMatched / joinAttempted) * 100, 1) : null,
     unknownToParticle: unknownToParticle.length,
     freshWindowDays: freshDays,
     liveWindowDays: liveDays,
-    unmappedLive: liveButUnmapped.length,
-    unmappedLiveByGroup: unmappedByGroup,
-    unmappedStale,
-    excludedDeviceIds: excluded.all.size,
-    excludedTabs: EXCLUDED_REGISTRY_TABS.length, // names deliberately not carried in the payload
-    excludedLiveFiltered: excludedFiltered,
-    excludedLiveRecovered: excludedRecovered, // kept despite tab membership, via a live group tag
+    unmappedLive: lbu.rows.length,
+    unmappedLiveByGroup: lbu.byProperty,
+    // Attributable only: an unattributable device is not counted here either.
+    unmappedStale: lbu.stale,
   };
 
   // Triage order: worst first - Issue before Check, then longest silent.
@@ -2059,33 +1674,27 @@ function normalize() {
     return (b.daysSilent ?? -1) - (a.daysSilent ?? -1);
   });
 
+  const stamps = properties.map((p) => p.snapshot.currentTime).filter(Boolean).sort();
   const out = {
     builtAt: iso(builtAt),
     // Heartbeats are read live from the Particle API at build time, so this
-    // single stamp covers the whole fleet. It replaces the old per-property
-    // heartbeat staleness, which existed only because the exports were stale.
+    // single stamp covers the whole fleet.
     heartbeatsAsOf: iso(builtAt),
+    // The OLDEST per-property "sheet export as of" (D5); null if none has one.
+    sheetExportAsOf: stamps.length ? stamps[0] : null,
     particle: particleSummary,
     thresholds: THRESHOLDS,
     properties,
     triage,
     reconciliation: {
-      ghosts,
-      unregisteredReporters,
-      roomDeviceMismatches,
-      orphanTelemetryRooms,
       duplicateRoomRows,
       unknownToParticle,
-      liveButUnmapped,
-      liveUnmappedNote,
-      roomOverrides: roomOverrideSummaries,
-      overrideRoomsNotInRoster,
-      overrideRoomsWithoutDevice,
-      overrideDiscardedAssignments,
-      overrideOverwrittenAssignments,
-      overrideRelocatedDevices,
+      liveButUnmapped: lbu.rows,
       notes,
     },
+    // Not shipped to the page: render.js sends an explicit list of keys, and
+    // this is not one of them. Display is a later block's decision.
+    findings,
   };
 
   fs.mkdirSync(path.dirname(OUT_FILE), { recursive: true });
@@ -2094,25 +1703,28 @@ function normalize() {
 }
 
 function report(data) {
-  console.log('NORMALIZE  per-property counts');
   const pad = (s, n) => String(s).padEnd(n);
   const lpad = (s, n) => String(s).padStart(n);
+  const nameOfId = (id) => {
+    for (const p of data.properties) for (const r of p.rooms) if (r.deviceId === id && r.deviceName) return r.deviceName;
+    return null;
+  };
+
+  console.log('NORMALIZE  per-property counts');
   console.log(
     `  ${pad('prop', 6)}${pad('name', 24)}${lpad('rooms', 6)}${lpad('Ok', 5)}${lpad('Issue', 6)}${lpad('Check', 6)}` +
-      `${lpad('rept', 6)}${lpad('silent', 7)}${lpad('reg', 5)}  battery age (med/oldest)   export snapshot`
+      `${lpad('Unk', 5)}${lpad('rept', 6)}${lpad('silent', 7)}${lpad('noDev', 6)}  ${pad('battery age (med/oldest)', 26)}sheet export as of`
   );
   for (const p of data.properties) {
     const c = p.counts;
     const snap = p.snapshot.currentTime
-      ? `${p.snapshot.currentTime.slice(0, 10)} (${p.snapshot.ageDays}d, ${p.snapshot.bucket})`
-      : 'none';
+      ? `${p.snapshot.date} (${p.snapshot.currentTime}, ${p.snapshot.ageDays}d)`
+      : 'unknown';
     const ba = p.batteryAge;
-    const baStr = ba.readings
-      ? `${ba.medianDays}d / ${ba.oldestDays}d (${ba.bucket})`.padEnd(24)
-      : 'no readings'.padEnd(24);
+    const baStr = ba.readings ? `${ba.medianDays}d / ${ba.oldestDays}d (${ba.bucket})` : 'no readings';
     console.log(
       `  ${pad(p.code, 6)}${pad(p.name.slice(0, 23), 24)}${lpad(c.rooms, 6)}${lpad(c.ok, 5)}${lpad(c.issue, 6)}` +
-        `${lpad(c.check, 6)}${lpad(c.reporting, 6)}${lpad(c.silent, 7)}${lpad(p.hasRegistry ? c.registryDevices : '-', 5)}  ${baStr}   ${snap}`
+        `${lpad(c.check, 6)}${lpad(c.other, 5)}${lpad(c.reporting, 6)}${lpad(c.silent, 7)}${lpad(c.noDevice, 6)}  ${pad(baStr, 26)}${snap}`
     );
   }
 
@@ -2122,21 +1734,20 @@ function report(data) {
       ok: a.ok + p.counts.ok,
       issue: a.issue + p.counts.issue,
       check: a.check + p.counts.check,
+      other: a.other + p.counts.other,
     }),
-    { rooms: 0, ok: 0, issue: 0, check: 0 }
+    { rooms: 0, ok: 0, issue: 0, check: 0, other: 0 }
   );
   console.log(
-    `  ${pad('TOTAL', 30)}${lpad(tot.rooms, 6)}${lpad(tot.ok, 5)}${lpad(tot.issue, 6)}${lpad(tot.check, 6)}`
+    `  ${pad('TOTAL', 30)}${lpad(tot.rooms, 6)}${lpad(tot.ok, 5)}${lpad(tot.issue, 6)}${lpad(tot.check, 6)}${lpad(tot.other, 5)}`
   );
   console.log(`  triage queue rows (Issue + Check): ${data.triage.length}  [expect ${tot.issue + tot.check}]`);
+  console.log(`  sheet export as of, oldest (header): ${data.sheetExportAsOf || 'unknown'}`);
 
   console.log('\nNORMALIZE  heartbeat-age histogram');
   for (const p of data.properties) {
     const h = p.heartbeatHistogram;
-    console.log(
-      `  ${pad(p.code, 6)}` +
-        Object.entries(h).map(([k, v]) => `${k}=${v}`).join('  ')
-    );
+    console.log(`  ${pad(p.code, 6)}` + Object.entries(h).map(([k, v]) => `${k}=${v}`).join('  '));
   }
 
   console.log('\nNORMALIZE  battery distribution');
@@ -2146,60 +1757,99 @@ function report(data) {
   }
 
   const q = data.particle;
+  const lum = data.reconciliation.liveButUnmapped;
   console.log('\nNORMALIZE  Particle join (heartbeat source)');
   console.log(`  device list pulled      : ${q.pulledAt}`);
   console.log(`  devices in product      : ${q.fleetDevices}`);
-  console.log(`  mapped to an in-scope room: ${q.mappedDevices}`);
-  console.log(
-    `  join                    : ${q.joinMatched}/${q.joinAttempted} matched (${q.joinRatePct}%)`
-  );
+  console.log(`  distinct ids in rooms   : ${q.mappedDevices}`);
+  console.log(`  join                    : ${q.joinMatched}/${q.joinAttempted} matched (${q.joinRatePct}%)`);
   console.log(`  unknown to Particle     : ${q.unknownToParticle}   [expect 0]`);
-  console.log(`  live but unmapped (<=${q.liveWindowDays}d): ${q.unmappedLive}`);
-  console.log(`    by group              : ${JSON.stringify(q.unmappedLiveByGroup)}`);
-  console.log(`  unmapped and stale (>${q.liveWindowDays}d) : ${q.unmappedStale}  (count only, not listed)`);
-  console.log(`  excluded device ids     : ${q.excludedDeviceIds} across ${q.excludedTabs} tabs (listed above)`);
-  console.log(`  excluded devices that were live+unmapped and filtered out: ${q.excludedLiveFiltered}`);
-  console.log(`  kept despite tab membership (live property group tag)     : ${q.excludedLiveRecovered}`);
-
-  const ov = data.reconciliation.roomOverrides || [];
-  if (ov.length) {
-    console.log('\nNORMALIZE  room-assignment overrides applied');
-    for (const o of ov) {
-      console.log(`  ${o.property}  mode=${o.mode}  source: ${o.source || 'unstated'}  captured ${o.capturedAt || 'undated'}`);
-      console.log(`    pairs in the file                  : ${o.pairs}`);
-      console.log(`    mapped onto a room on the roster   : ${o.mappedRooms}`);
-      console.log(`    rooms NOT on the sheet roster      : ${o.roomsNotInRoster}  (no row invented; devices stay unmapped)`);
-      if (o.mode === 'replace') {
-        console.log(`    roster rooms now without a device  : ${o.rosterRoomsWithoutDevice}`);
-        console.log(`    sheet assignments discarded        : ${o.discardedAssignments}  (the registry backfill's worklist)`);
-      } else {
-        console.log(`    rooms whose device was overwritten : ${o.overwritten}`);
-        console.log(`    devices moved out of another room  : ${o.relocated}`);
-        console.log(`    rooms left untouched by the merge  : ${o.untouchedRooms}`);
-      }
-    }
+  console.log(`  live but unmapped (<=${q.liveWindowDays}d): ${q.unmappedLive}  = sum of properties ${JSON.stringify(q.unmappedLiveByGroup)}`);
+  for (const u of lum) {
+    console.log(
+      `    ${pad(u.property, 6)}${pad(u.deviceName || '-', 10)}...${pad(u.deviceIdShort, 8)}${pad(u.group || '(no group)', 34)}` +
+        `${pad(u.attribution === 'tag' ? 'by tag' : 'by export Location', 20)}${u.ageDays}d`
+    );
   }
+  console.log(`  unmapped and stale (>${q.liveWindowDays}d), attributable: ${q.unmappedStale}  (count only, not listed)`);
+
+  const f = data.findings;
+  const where = (x) => `${x.property}/${x.room}`;
+  console.log('\nNORMALIZE  sheet findings (flagged, never failed on)');
+  console.log(`  F1 one device id in two or more rooms: ${f.f1.length}`);
+  for (const x of f.f1) {
+    console.log(`    ${x.deviceName || '-'} ...${x.deviceIdShort}  ${x.rooms.map((r) => r.property + '/' + r.room).join(', ')}` +
+      `${x.crossProperty ? '  (cross-property)' : ''}`);
+  }
+  console.log(`  F2 Location vs live esa_ tag: ${f.f2.length}`);
+  for (const x of f.f2) console.log(`    ${where(x)}  ${x.deviceName || '-'} ...${x.deviceIdShort}  ${x.group}`);
+  console.log('  F2 coverage (device rows whose device carries a live esa_ tag):');
+  for (const [code, c] of Object.entries(f.f2Coverage)) {
+    console.log(
+      `    ${pad(code, 6)}${c.checkable}/${c.deviceRows} = ${c.pctCheckable}%   untagged ${c.untagged}` +
+        ` (${c.untaggedBaseline} baseline_*)   unknown to Particle ${c.unknownToParticle}`
+    );
+  }
+  console.log(`  F3 DeviceId not an id, or unknown to Particle: ${f.f3.length}`);
+  for (const x of f.f3) console.log(`    ${where(x)}  ${x.reason}: ${x.value}`);
+  console.log(
+    `  F4 note names a replacement DeviceId does not show: ${f.f4.length}` +
+      `   (${f.f4NotesRecognised} notes recognised, incl. ${f.f4Unnamed.length} unnamed)`
+  );
+  const f4ByReason = {};
+  for (const x of f.f4) f4ByReason[x.reason] = (f4ByReason[x.reason] || 0) + 1;
+  console.log(`    by reason: ${JSON.stringify(f4ByReason)}`);
+  for (const x of f.f4) {
+    const shows = x.deviceId ? (nameOfId(x.deviceId) || '...' + String(x.deviceId).slice(-6)) : 'blank';
+    console.log(`    ${pad(where(x), 11)}${pad(x.namedUnit, 9)}DeviceId ${pad(shows, 10)}${x.reason}`);
+  }
+  for (const x of f.f4Unnamed) console.log(`    unnamed: ${where(x)}  ${JSON.stringify(x.note)}`);
+
+  const ut = f.unplacedTelemetry;
+  const utDevices = [...new Set(ut.map((u) => u.deviceId))];
+  const utBy = (s) => ut.filter((u) => u.source === s).length;
+  console.log(
+    `  unplaced telemetry (D10, log only): ${ut.length} rows (${utBy('batterystatus')} batterystatus + ` +
+      `${utBy('heartbeatstatus')} heartbeatstatus), ${utDevices.length} devices no room holds`
+  );
+  for (const id of utDevices) {
+    const rows = ut.filter((u) => u.deviceId === id);
+    const u = rows[0];
+    const a = u.attribution;
+    const heard = u.lastHeard ? round((new Date(data.builtAt) - new Date(u.lastHeard)) / DAY_MS, 1) + 'd' : 'never';
+    console.log(
+      `    ${pad(u.deviceName || '-', 9)}...${pad(u.deviceIdShort, 8)}${pad(u.groups.join('+') || '(no group)', 34)}` +
+        `${pad(a ? a.property + (a.via === 'tag' ? ' (tag)' : ' (export Location)') : 'unattributable', 24)}` +
+        `heard ${pad(heard, 8)}${rows.map((r) => r.source.replace('status', '') + (r.location ? '@' + r.location : '')).join(', ')}`
+    );
+  }
+  console.log(`  out-of-scope roomstatus rows dropped (D15, log only): ${f.outOfScopeRows.length}`);
+  for (const o of f.outOfScopeRows) console.log(`    sheet row ${o.sheetRow}  Location ${JSON.stringify(o.location)}  room ${o.room}  - ${o.reason}`);
+
+  const sh = f.sheetHygiene;
+  console.log('  sheet hygiene (findings, not asserts):');
+  console.log(
+    `    heartbeatstatus ids on more than one row: ${sh.heartbeatDuplicateIds.length}` +
+      (sh.heartbeatDuplicateIds.length
+        ? '  (' + sh.heartbeatDuplicateIds.map((d) => '...' + d.deviceId.slice(-6) + ' ' + d.locations.join('+')).join('; ') + ')'
+        : '')
+  );
+  console.log(
+    `    heartbeatstatus ids in more than one Location: ${sh.heartbeatMultiLocationIds.length}` +
+      (sh.heartbeatMultiLocationIds.length
+        ? '  (' + sh.heartbeatMultiLocationIds.map((d) => '...' + d.deviceId.slice(-6) + ' ' + d.locations.join('+')).join('; ') + ')'
+        : '')
+  );
+  console.log(`    properties with more than one CurrentTime: ${sh.currentTimeSpread.length}`);
+  console.log(`    batterystatus ids on more than one row: ${sh.batteryDuplicateIds.length}`);
 
   const r = data.reconciliation;
   console.log('\nNORMALIZE  reconciliation summary');
-  console.log(`  ghosts (registered, never seen in telemetry) : ${r.ghosts.length}`);
-  console.log(`  unregistered reporters (telemetry, no registry) : ${r.unregisteredReporters.length}`);
-  console.log(`  room/device mismatches : ${r.roomDeviceMismatches.length}`);
-  console.log(`  telemetry rooms not listed in triage : ${r.orphanTelemetryRooms.length}`);
   console.log(`  duplicated room rows : ${r.duplicateRoomRows.length}`);
   console.log(`  unknown to Particle : ${r.unknownToParticle.length}`);
   console.log(`  live but unmapped : ${r.liveButUnmapped.length}`);
   console.log(`  notes : ${r.notes.length}`);
   for (const n of r.notes) console.log(`    - [${n.property}/${n.severity}] ${n.text}`);
-
-  const byProp = (arr) =>
-    arr.reduce((m, x) => {
-      m[x.property] = (m[x.property] || 0) + 1;
-      return m;
-    }, {});
-  console.log(`  ghosts by property: ${JSON.stringify(byProp(r.ghosts))}`);
-  console.log(`  unregistered by property: ${JSON.stringify(byProp(r.unregisteredReporters))}`);
-  console.log(`  mismatches by property: ${JSON.stringify(byProp(r.roomDeviceMismatches))}`);
 
   console.log(`\nNORMALIZE  wrote ${path.relative(__dirname, OUT_FILE)}`);
 }
@@ -2224,10 +1874,13 @@ function dailyRecord(data) {
 
   const properties = {};
   let liveUnder2dTotal = 0;
+  let unmappedLiveTotal = 0;
   for (const p of data.properties) {
     const c = p.counts;
     const liveUnder2d = p.heartbeatHistogram[freshKey] || 0;
     liveUnder2dTotal += liveUnder2d;
+    const unmappedLive = unmappedByGroup[p.code] || 0;
+    unmappedLiveTotal += unmappedLive;
     properties[p.code] = {
       rooms: c.rooms,
       ok: c.ok,
@@ -2235,11 +1888,13 @@ function dailyRecord(data) {
       check: c.check,
       reporting: c.reporting,
       silent: c.silent,
-      snapshot: p.snapshot.currentTime ? p.snapshot.currentTime.slice(0, 10) : null,
+      // The Chicago calendar date of the export, not an ISO slice: an export
+      // at 19:30 CDT is already tomorrow in UTC (D4, CUTOVER.md §7).
+      snapshot: zonedDate(p.snapshot.currentTime),
       battery: p.batteryHistogram,
       // --- added in v2 -----------------------------------------------------
       liveUnder2d, // mapped rooms heard from within the fresh window
-      unmappedLive: unmappedByGroup[p.code] || 0, // live devices with no room here
+      unmappedLive, // live devices attributed here that no room holds
     };
   }
   return {
@@ -2248,11 +1903,12 @@ function dailyRecord(data) {
     triageRows: data.triage.length,
     properties,
     // --- added in v2 ---------------------------------------------------------
-    // Fleet unmappedLive is NOT the sum of the per-property figures: devices
-    // with no usable group tag land in a fleet-level pool and are attributed
-    // to no property.
+    // Fleet unmappedLive IS the sum of the per-property figures as of the
+    // cutover: a device no property can claim is not counted anywhere, so
+    // there is no fleet-level pool (CUTOVER.md §6, D3). Records written
+    // before the cutover carry the old pool and are left as recorded.
     liveUnder2d: liveUnder2dTotal,
-    unmappedLive: q.unmappedLive || 0,
+    unmappedLive: unmappedLiveTotal,
   };
 }
 

@@ -498,8 +498,11 @@
   document.getElementById('nRooms').textContent = ALL_ROOMS.length;
 
   var R = DATA.reconciliation;
-  var reconTotal = R.ghosts.length + R.unregisteredReporters.length + R.roomDeviceMismatches.length
-                 + R.orphanTelemetryRooms.length + R.duplicateRoomRows.length
+  var reconTotal = (R.ghosts ? R.ghosts.length : 0)
+                 + (R.unregisteredReporters ? R.unregisteredReporters.length : 0)
+                 + (R.roomDeviceMismatches ? R.roomDeviceMismatches.length : 0)
+                 + (R.orphanTelemetryRooms ? R.orphanTelemetryRooms.length : 0)
+                 + R.duplicateRoomRows.length
                  + (R.liveButUnmapped ? R.liveButUnmapped.length : 0)
                  + (R.unknownToParticle ? R.unknownToParticle.length : 0)
                  + (R.overrideRoomsNotInRoster ? R.overrideRoomsNotInRoster.length : 0)
@@ -754,7 +757,6 @@
     ['Battery V', function (r) { return r.battery; }],
     ['Battery class', function (r) { return r.batteryClass; }],
     ['Action item', function (r) { return r.actionItem; }],
-    ['Last checked', function (r) { return r.lastChecked; }],
     ['Notes', function (r) { return r.notes; }]
   ];
   function csvCell(v) {
@@ -1014,11 +1016,7 @@
     var batTotal = batParts.reduce(function (s, x) { return s + x.n; }, 0);
 
     var notes = [];
-    if (!p.hasRegistry) notes.push('No registry tab &mdash; triage and telemetry only, cannot be reconciled.');
-    else notes.push(c.registryDevices + ' device' + (c.registryDevices === 1 ? '' : 's') + ' registered against ' + c.rooms + ' rooms'
-      + (c.registryInventoryOnly ? ' (plus ' + c.registryInventoryOnly + ' registry rows with no room assigned)' : '') + '.');
     if (c.rooms !== c.distinctRooms) notes.push(c.rooms + ' rows cover ' + c.distinctRooms + ' distinct rooms &mdash; some rooms appear twice.');
-    if (p.snapshot.labelMatchesSnapshot === false) notes.push('Sheet header says &ldquo;' + esc(p.snapshot.headerLabel) + '&rdquo;; badge uses the export timestamp.');
     if (!TH.batteryVoltage.confirmed) notes.push('Battery cutoffs unconfirmed &mdash; voltages shown unclassified.');
     if (awaiting > 0) {
       notes.push('<span class="await">+' + awaiting + ' live device' + (awaiting === 1 ? '' : 's')
@@ -1058,7 +1056,7 @@
               + ' &middot; ' + ba.readings + ' of ' + c.rooms + ' rooms &middot; ages approximate</div>'
             : '<div class="muted" style="margin-top:6px;font-size:11px">No battery readings for this property.</div>')
         + '</div>'
-      + '<div class="cardnote">' + notes.join('<br>') + '</div>'
+      + (notes.length ? '<div class="cardnote">' + notes.join('<br>') + '</div>' : '')
       + '</div>';
   }).join('');
 
@@ -1371,7 +1369,8 @@
       }));
   }
 
-  blocks += block('Ghosts', R.ghosts.length,
+  // The registry lists below are retired with the registry; they draw only if present.
+  if (R.ghosts) blocks += block('Ghosts', R.ghosts.length,
     'In the registry, never seen in telemetry. Either never came online, or was removed without the registry being updated.',
     table(['Prop', 'Room', 'Device', 'Particle ID', 'Installed', 'Registry notes'], R.ghosts, function (g) {
       return '<tr>' + propCell(g)
@@ -1382,7 +1381,7 @@
         + '<td class="notecell" data-label="Notes">' + esc(g.notes || '') + '</td></tr>';
     }));
 
-  blocks += block('Unregistered reporters', R.unregisteredReporters.length,
+  if (R.unregisteredReporters) blocks += block('Unregistered reporters', R.unregisteredReporters.length,
     'Reporting telemetry but absent from the registry tab. These are real devices with no paperwork.',
     table(['Prop', 'Room', 'Particle ID', 'Last heartbeat'], R.unregisteredReporters, function (u) {
       return '<tr>' + propCell(u)
@@ -1391,7 +1390,7 @@
         + '<td class="num" data-label="Last heartbeat">' + esc(fmtDate(u.lastHeartbeat)) + '</td></tr>';
     }));
 
-  blocks += block('Room / device mismatches', R.roomDeviceMismatches.length,
+  if (R.roomDeviceMismatches) blocks += block('Room / device mismatches', R.roomDeviceMismatches.length,
     'The registry and the telemetry disagree about where a device is, or which device is in a room.',
     table(['Prop', 'What', 'Device', 'Registry says', 'Telemetry says'], R.roomDeviceMismatches, function (m) {
       return '<tr>' + propCell(m)
@@ -1401,7 +1400,7 @@
         + '<td class="mono" data-label="Telemetry">' + esc(m.telemetryRoom || (m.telemetryDeviceId || '').slice(0, 12) || '—') + '</td></tr>';
     }));
 
-  blocks += block('Reporting from an unlisted room', R.orphanTelemetryRooms.length,
+  if (R.orphanTelemetryRooms) blocks += block('Reporting from an unlisted room', R.orphanTelemetryRooms.length,
     'Telemetry arrives from a room the triage sheet does not list as installed.',
     table(['Prop', 'Room', 'Particle ID', 'Last heartbeat'], R.orphanTelemetryRooms, function (o) {
       return '<tr>' + propCell(o)
