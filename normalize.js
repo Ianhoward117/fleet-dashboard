@@ -600,8 +600,11 @@ function parseHeartbeatRows(rawRows, K, timeZone = SHEET_TIME_ZONE) {
  * Split roomstatus rows by Location.
  *
  * Out-of-scope rows - a Location that is blank, unreadable, or not a
- * configured property, and the rare row with no room number - are dropped and
- * returned for the log (D15). They are never counted.
+ * configured property - are dropped and returned for the log (D15). A row with
+ * a configured Location but no room number is dropped and logged too, apart
+ * from them, and is never fatal: D16 guards the partition, not room identity,
+ * and a half-typed row in the sheet must not take the site down (Ian,
+ * 2026-09-25). Neither kind is ever counted.
  *
  * Structural, and fatal:
  *   - D16: every in-scope row lands in exactly one property. This is the
@@ -613,21 +616,17 @@ function partitionRoomRows(rows, properties) {
   const codes = new Set(properties.map((p) => p.code));
   const inScope = [];
   const outOfScope = [];
+  const noRoom = [];
   for (const r of rows) {
     const reason = !r.location
       ? 'blank or unreadable Location'
       : !codes.has(r.location)
         ? 'Location ' + r.location + ' is not a configured property'
-        : !r.room
-          ? 'no room number'
-          : null;
+        : null;
     if (reason) {
-      outOfScope.push({
-        sheetRow: r.sheetRow,
-        location: r.locationRaw,
-        room: r.room ? r.room.display : null,
-        reason,
-      });
+      outOfScope.push({ sheetRow: r.sheetRow, location: r.locationRaw, room: r.room ? r.room.display : null, reason });
+    } else if (!r.room) {
+      noRoom.push({ sheetRow: r.sheetRow, location: r.location, status: r.status, deviceId: r.deviceId });
     } else {
       inScope.push(r);
     }
@@ -660,7 +659,7 @@ function partitionRoomRows(rows, properties) {
         `  Check the sheet's Location column and config.js PROPERTIES.`
     );
   }
-  return { byProperty, inScope, outOfScope };
+  return { byProperty, inScope, outOfScope, noRoom };
 }
 
 /** batterystatus by device id. The first row wins, as the sheet's own MATCH() lookup does. */
@@ -1665,6 +1664,7 @@ function normalize() {
     // Log-only (D10, D15). Never a page list, and never counted on the page.
     unplacedTelemetry: findUnplacedTelemetry(src.battery, src.heartbeat, heldIds, particle.byId, hb.locationsById, liveCodes),
     outOfScopeRows: part.outOfScope,
+    noRoomRows: part.noRoom,
     blankRoomstatusRows: src.rooms.blank,
     sheetHygiene: {
       heartbeatDuplicateIds: hb.duplicateIds,
@@ -1876,6 +1876,8 @@ function report(data) {
   }
   console.log(`  out-of-scope roomstatus rows dropped (D15, log only): ${f.outOfScopeRows.length}`);
   for (const o of f.outOfScopeRows) console.log(`    sheet row ${o.sheetRow}  Location ${JSON.stringify(o.location)}  room ${o.room}  - ${o.reason}`);
+  console.log(`  rows with a configured Location but no room number, dropped (log only, never fatal): ${f.noRoomRows.length}`);
+  for (const o of f.noRoomRows) console.log(`    sheet row ${o.sheetRow}  Location ${o.location}  status ${o.status || '-'}  DeviceId ${o.deviceId || 'blank'}`);
 
   const sh = f.sheetHygiene;
   console.log('  sheet hygiene (findings, not asserts):');

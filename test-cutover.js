@@ -202,9 +202,22 @@ t('D15: out-of-scope rows are dropped and returned for the log', () => {
     'Location 9829 is not a configured property',
     'blank or unreadable Location',
     'blank or unreadable Location',
-    'no room number',
   ]);
   assert.strictEqual(part.outOfScope[0].location, 9829);
+});
+t('a configured Location with no room number is dropped and logged apart, never fatal', () => {
+  const { rows } = N.parseRoomstatusRows(
+    [raw(6197, 101, null), raw(6178, null, hex(4), { Status: 'Issue' }), raw(6178, 104, null)],
+    K()
+  );
+  let part;
+  assert.doesNotThrow(() => { part = N.partitionRoomRows(rows, PROPS.slice(0, 2)); });
+  assert.strictEqual(part.outOfScope.length, 0);
+  assert.deepStrictEqual(keep(part.noRoom.map((o) => [o.location, o.status, o.deviceId])), [['6178', 'Issue', hex(4)]]);
+  assert.strictEqual(part.byProperty.get('6178').length, 1, 'never counted');
+  // Even when it is the property's only row, the zero-rows check - not D16 - is what fires.
+  const lone = N.parseRoomstatusRows([raw(6197, 101, null), raw(6178, null, null)], K()).rows;
+  assert.throws(() => N.partitionRoomRows(lone, PROPS.slice(0, 2)), /no roomstatus rows.*6178/);
 });
 t('D15: an out-of-scope row is never counted in any property', () => {
   const { rows } = N.parseRoomstatusRows([raw(6197, 101, null), raw(6178, 101, null), raw(9829, 101, null)], K());
