@@ -27,6 +27,13 @@ const SHEET_IDS = {
   wo_6178: '1Hw0pYIWKSIOp8TRego3QayW4IlXLe0CPeGoyKSvr3Po',
 };
 
+// The zone the sheet exports write their timestamps in. They are Central
+// wall-clock times with no offset attached: read as Central they agree with
+// Particle's last_heard, read as UTC they are five hours early (CUTOVER.md §3,
+// D4). normalize.js parses every sheet datetime it reads in this zone,
+// DST-aware, so the build gives the same instants in Austin and on Netlify.
+const SHEET_TIME_ZONE = 'America/Chicago';
+
 // Where the built dashboard is published. The daily workflow checks this URL
 // after triggering a rebuild, so a refresh that silently stops working turns
 // into a failed workflow rather than a page that quietly goes stale.
@@ -288,6 +295,7 @@ const TRENDS = {
 
 module.exports = {
   SHEET_IDS,
+  SHEET_TIME_ZONE,
   SITE_URL,
   PARTICLE,
   EXCLUDED_REGISTRY_TABS,

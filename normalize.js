@@ -25,7 +25,7 @@
 const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
-const { PROPERTIES, THRESHOLDS, EXCLUDED_REGISTRY_TABS, PARTICLE } = require('./config');
+const { PROPERTIES, THRESHOLDS, EXCLUDED_REGISTRY_TABS, PARTICLE, SHEET_TIME_ZONE } = require('./config');
 const PARTICLE_PRODUCT_ID = PARTICLE.productId;
 // The override is a committed source file, not fetched data, so it is read
 // through fetch.js's validator rather than from data/raw/. That way
@@ -255,6 +255,683 @@ function particleGroupCode(device) {
     if (m) return { code: m[1], group: g };
   }
   return null;
+}
+
+/**
+ * First esa_#### / esa-#### group naming a LIVE property. The regex is
+ * anchored, so "baseline_6_shelves_esa_wifi_spi" is not a tag; a tag for a
+ * property this dashboard does not render (esa_9829) is not a live tag.
+ */
+function liveTagOf(device, liveCodes) {
+  for (const g of (device && device.groups) || []) {
+    const m = /^esa[-_](\d{4})/i.exec(String(g));
+    if (m && liveCodes.has(m[1])) return { code: m[1], group: String(g) };
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Sheet time (D4)
+// ---------------------------------------------------------------------------
+
+/**
+ * The consolidated export writes America/Chicago wall-clock time: read as
+ * Central, its timestamps agree with Particle's last_heard; read as UTC they
+ * are exactly five hours early (CUTOVER.md §3).
+ *
+ * Datetimes arrive as Excel serials, and the workbook is read with cellDates
+ * OFF. SheetJS's own serial-to-Date conversion builds the Date in the HOST
+ * zone, so the same sheet would give Austin and Netlify different instants.
+ * Here the serial becomes wall-clock fields by plain arithmetic, and the
+ * wall clock becomes an instant through Intl. Nothing depends on TZ.
+ */
+const EXCEL_EPOCH_DAYS = 25569; // days from 1899-12-30 (the serial epoch) to 1970-01-01
+
+const zoneFormatters = new Map();
+function zonedParts(ms, timeZone) {
+  let f = zoneFormatters.get(timeZone);
+  if (!f) {
+    f = new Intl.DateTimeFormat('en-US', {
+      timeZone, hourCycle: 'h23',
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    });
+    zoneFormatters.set(timeZone, f);
+  }
+  const out = {};
+  for (const p of f.formatToParts(new Date(ms))) if (p.type !== 'literal') out[p.type] = Number(p.value);
+  return out;
+}
+
+/** The zone's offset from UTC at an instant, in ms (Central: -5 h or -6 h). */
+function zoneOffsetMs(ms, timeZone) {
+  const whole = Math.floor(ms / 1000) * 1000;
+  const p = zonedParts(whole, timeZone);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - whole;
+}
+
+/**
+ * A wall-clock reading in `timeZone` -> UTC epoch ms.
+ *
+ * DST, decided rather than left to chance:
+ *   - the fall-back hour happens twice; it reads as the EARLIER instant
+ *     (daylight time), so 01:30 on 2026-11-01 is 06:30Z;
+ *   - the spring-forward hour never happens; it reads with the offset in
+ *     force just before the jump, so 02:30 on 2027-03-14 is 08:30Z, the
+ *     same instant as 03:30 CDT.
+ */
+function zonedWallClockToUtc(wall, timeZone) {
+  const naive = Date.UTC(wall.y, wall.mo - 1, wall.d, wall.h || 0, wall.mi || 0, wall.s || 0, wall.ms || 0);
+  // Central changes offset twice a year, never twice in two days, so the
+  // offsets a day either side are the only two a reading can have.
+  const before = zoneOffsetMs(naive - DAY_MS, timeZone);
+  const after = zoneOffsetMs(naive + DAY_MS, timeZone);
+  const valid = [...new Set([before, after])]
+    .map((off) => naive - off)
+    .filter((t) => zoneOffsetMs(t, timeZone) === naive - t);
+  return valid.length ? Math.min(...valid) : naive - before;
+}
+
+/** Excel serial -> wall-clock fields. Pure arithmetic in a UTC frame. */
+function serialToWallClock(serial) {
+  if (typeof serial !== 'number' || !Number.isFinite(serial)) return null;
+  const d = new Date(Math.round((serial - EXCEL_EPOCH_DAYS) * DAY_MS));
+  return {
+    y: d.getUTCFullYear(), mo: d.getUTCMonth() + 1, d: d.getUTCDate(),
+    h: d.getUTCHours(), mi: d.getUTCMinutes(), s: d.getUTCSeconds(), ms: d.getUTCMilliseconds(),
+  };
+}
+
+/**
+ * Parse one sheet datetime cell as `timeZone` wall-clock time.
+ *
+ *   number                            an Excel serial (how the export writes it)
+ *   "YYYY-MM-DD HH:MM[:SS[.fff]]"     wall-clock text, same zone
+ *   the same with Z or +/-HH:MM       an explicit instant, taken as written
+ *
+ * Everything else is null: bad tokens, duration strings that have leaked
+ * into timestamp columns before ("130 days 02:13:33"), month/day text that
+ * cannot be read unambiguously, and Date objects - a Date here was built in
+ * the host zone by the parser, which is exactly the error this exists to
+ * remove, so it is refused rather than trusted.
+ */
+function parseSheetDateTime(v, timeZone = SHEET_TIME_ZONE) {
+  if (v === null || v === undefined || v instanceof Date) return null;
+  if (typeof v === 'number') {
+    const w = serialToWallClock(v);
+    return w ? new Date(zonedWallClockToUtc(w, timeZone)) : null;
+  }
+  const s = String(v).trim();
+  if (isBad(s) || /^\d+\s+days?\b/i.test(s)) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?)?\s*(Z|[+-]\d{2}:?\d{2})?$/i.exec(s);
+  if (!m) return null;
+  const wall = {
+    y: +m[1], mo: +m[2], d: +m[3], h: +(m[4] || 0), mi: +(m[5] || 0), s: +(m[6] || 0),
+    ms: m[7] ? +m[7].slice(0, 3).padEnd(3, '0') : 0,
+  };
+  if (wall.mo < 1 || wall.mo > 12 || wall.d < 1 || wall.d > 31 || wall.h > 23 || wall.mi > 59 || wall.s > 59) return null;
+  if (m[8]) {
+    const z = m[8].toUpperCase();
+    const off = z === 'Z' ? 0 : (z[0] === '-' ? -1 : 1) * (+z.slice(1, 3) * 60 + +z.slice(-2)) * 60000;
+    return new Date(Date.UTC(wall.y, wall.mo - 1, wall.d, wall.h, wall.mi, wall.s, wall.ms) - off);
+  }
+  return new Date(zonedWallClockToUtc(wall, timeZone));
+}
+
+/**
+ * The calendar date of an instant in `timeZone`, as YYYY-MM-DD. The daily
+ * record's snapshot date is this, not an ISO slice: an export at 19:30 CDT is
+ * 00:30Z the next day, and slicing would file it under the wrong date.
+ */
+function zonedDate(v, timeZone = SHEET_TIME_ZONE) {
+  const d = v instanceof Date ? v : v ? new Date(v) : null;
+  if (!d || isNaN(d)) return null;
+  const p = zonedParts(d.getTime(), timeZone);
+  return p.year + '-' + String(p.month).padStart(2, '0') + '-' + String(p.day).padStart(2, '0');
+}
+
+// ---------------------------------------------------------------------------
+// Consolidated workbook: rows
+// ---------------------------------------------------------------------------
+
+/**
+ * Location arrives as a NUMBER (6197). PROPERTIES codes are strings, and a
+ * number never equals a string: compared raw, roomstatus would partition into
+ * zero rows and heartbeatstatus would lose every Location and CurrentTime
+ * without a sound. So it becomes a 4-digit string before anything compares it.
+ */
+function locationCode(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') {
+    return Number.isInteger(v) && v >= 0 && v <= 9999 ? String(v).padStart(4, '0') : null;
+  }
+  const m = /^(\d{1,4})(?:\.0+)?$/.exec(String(v).trim());
+  return m ? m[1].padStart(4, '0') : null;
+}
+
+const DEVICE_ID_RE = /^[0-9a-f]{24}$/i;
+
+/**
+ * One roomstatus DeviceId cell. Blank - including the "" a lookup formula
+ * returns when heartbeatstatus has no row for the room - means no device.
+ * Anything else must be a 24-hex Particle id; ids are hex, so case is
+ * normalised. A value that is not an id is kept for the finding (F3) and
+ * never joined on.
+ */
+function readDeviceIdCell(v) {
+  const s = normStr(v);
+  if (!s) return { id: null, raw: null, problem: null };
+  if (!DEVICE_ID_RE.test(s)) return { id: null, raw: s, problem: 'malformed' };
+  return { id: s.toLowerCase(), raw: s, problem: null };
+}
+
+/** A device id from a telemetry tab: lowercased when it is one, kept as-is when not. */
+function telemetryDeviceId(v) {
+  const s = normStr(v);
+  if (!s) return null;
+  return DEVICE_ID_RE.test(s) ? s.toLowerCase() : s;
+}
+
+const isBlankRow = (r) => Object.values(r).every((v) => v === null || v === undefined || String(v).trim() === '');
+// sheet_to_json tags every row with its 0-based sheet index; blank rows it
+// skips would otherwise shift a counted index off the real sheet row.
+const sheetRowOf = (r, fallback) => (Number.isInteger(r.__rowNum__) ? r.__rowNum__ + 1 : fallback);
+
+/** A header matched by pattern, never by exact string: several carry a date suffix or a trailing space. */
+const headerKey = (headers, re) => headers.find((h) => re.test(String(h).trim())) || null;
+
+/**
+ * Required headers, per tab. A missing one is structural and fails the build.
+ * `Device# ` is deliberately absent: the display name comes from Particle by
+ * id (D8), so that column is never read.
+ */
+const REQUIRED_HEADERS = {
+  roomstatus: {
+    location: /^location$/i,
+    room: /^rooms?$/i,
+    deviceId: /^deviceid$/i,
+    status: /^status$/i,
+    action: /^action item/i,
+    notes: /^notes/i,
+    battery: /^battery status/i,
+    calibration: /^calibration risk/i,
+  },
+  batterystatus: {
+    deviceId: /^particledeviceid$/i,
+    lastTimestamp: /^lasttimestamp$/i,
+  },
+  heartbeatstatus: {
+    deviceId: /^particledeviceid$/i,
+    currentTime: /^currenttime$/i,
+    location: /^location$/i,
+  },
+};
+
+function requireHeaders(tab, headers) {
+  const want = REQUIRED_HEADERS[tab];
+  const K = {};
+  const missing = [];
+  for (const [field, re] of Object.entries(want)) {
+    K[field] = headerKey(headers, re);
+    if (!K[field]) missing.push(re.toString());
+  }
+  if (missing.length) {
+    throw new Error(
+      `NORMALIZE FAILED: tab "${tab}" is missing required header(s): ${missing.join(', ')}\n` +
+        `  headers seen: ${headers.map((h) => JSON.stringify(h)).join(' | ')}\n` +
+        `  A renamed column will do this. Refusing to build on a guess.`
+    );
+  }
+  return K;
+}
+
+/** roomstatus data rows -> records. Row 1 is a banner and row 2 the header, so data starts on row 3. */
+function parseRoomstatusRows(rawRows, K) {
+  const rows = [];
+  let blank = 0;
+  rawRows.forEach((r, i) => {
+    if (isBlankRow(r)) {
+      blank++;
+      return;
+    }
+    const cell = readDeviceIdCell(r[K.deviceId]);
+    rows.push({
+      sheetRow: sheetRowOf(r, i + 3),
+      location: locationCode(r[K.location]),
+      locationRaw: r[K.location] === undefined ? null : r[K.location],
+      room: normRoom(r[K.room]),
+      deviceId: cell.id,
+      deviceIdRaw: cell.raw,
+      deviceIdProblem: cell.problem,
+      status: normStr(r[K.status]),
+      actionItem: normStr(r[K.action]),
+      notes: normStr(r[K.notes]),
+      battery: normNum(r[K.battery]),
+      calibrationRisk: normStr(r[K.calibration]),
+    });
+  });
+  return { rows, blank };
+}
+
+function parseBatteryRows(rawRows, K, timeZone = SHEET_TIME_ZONE) {
+  return rawRows
+    .map((r, i) => ({ r, sheetRow: sheetRowOf(r, i + 2) }))
+    .filter(({ r }) => !isBlankRow(r))
+    .map(({ r, sheetRow }) => ({
+      sheetRow,
+      deviceId: telemetryDeviceId(r[K.deviceId]),
+      lastTimestamp: parseSheetDateTime(r[K.lastTimestamp], timeZone),
+    }));
+}
+
+function parseHeartbeatRows(rawRows, K, timeZone = SHEET_TIME_ZONE) {
+  return rawRows
+    .map((r, i) => ({ r, sheetRow: sheetRowOf(r, i + 2) }))
+    .filter(({ r }) => !isBlankRow(r))
+    .map(({ r, sheetRow }) => ({
+      sheetRow,
+      deviceId: telemetryDeviceId(r[K.deviceId]),
+      location: locationCode(r[K.location]),
+      currentTime: parseSheetDateTime(r[K.currentTime], timeZone),
+    }));
+}
+
+/**
+ * Split roomstatus rows by Location.
+ *
+ * Out-of-scope rows - a Location that is blank, unreadable, or not a
+ * configured property, and the rare row with no room number - are dropped and
+ * returned for the log (D15). They are never counted.
+ *
+ * Structural, and fatal:
+ *   - D16: every in-scope row lands in exactly one property. This is the
+ *     guard against the near-miss in CONSOLIDATION-FINDINGS §3.1, where every
+ *     property received every row and all the counts still agreed.
+ *   - a configured property with zero rows (checked after Location is a string).
+ */
+function partitionRoomRows(rows, properties) {
+  const codes = new Set(properties.map((p) => p.code));
+  const inScope = [];
+  const outOfScope = [];
+  for (const r of rows) {
+    const reason = !r.location
+      ? 'blank or unreadable Location'
+      : !codes.has(r.location)
+        ? 'Location ' + r.location + ' is not a configured property'
+        : !r.room
+          ? 'no room number'
+          : null;
+    if (reason) {
+      outOfScope.push({
+        sheetRow: r.sheetRow,
+        location: r.locationRaw,
+        room: r.room ? r.room.display : null,
+        reason,
+      });
+    } else {
+      inScope.push(r);
+    }
+  }
+
+  const landed = new Map(inScope.map((r) => [r, 0]));
+  const byProperty = new Map();
+  let placed = 0;
+  for (const p of properties) {
+    const mine = inScope.filter((r) => r.location === p.code);
+    for (const r of mine) landed.set(r, landed.get(r) + 1);
+    placed += mine.length;
+    byProperty.set(p.code, mine.map((r) => ({ ...r, property: p.code })));
+  }
+  const strays = inScope.filter((r) => landed.get(r) !== 1);
+  if (strays.length || placed !== inScope.length) {
+    throw new Error(
+      `NORMALIZE FAILED (D16): ${inScope.length} in-scope roomstatus rows were placed ${placed} times.\n` +
+        `  Every row must land in exactly one property. ${strays.length} did not, e.g. sheet row(s) ` +
+        strays.slice(0, 5).map((r) => r.sheetRow + ' (' + r.location + '/' + (r.room ? r.room.display : '?') +
+          ', ' + landed.get(r) + 'x)').join(', ') + '.\n' +
+        `  Check config.js PROPERTIES for a duplicated code. Refusing to build a fleet that counts rooms twice.`
+    );
+  }
+  const empty = properties.filter((p) => !(byProperty.get(p.code) || []).length).map((p) => p.code);
+  if (empty.length) {
+    throw new Error(
+      `NORMALIZE FAILED: no roomstatus rows for configured propert${empty.length === 1 ? 'y' : 'ies'} ${empty.join(', ')}.\n` +
+        `  A property with no rows looks exactly like a property with nothing wrong.\n` +
+        `  Check the sheet's Location column and config.js PROPERTIES.`
+    );
+  }
+  return { byProperty, inScope, outOfScope };
+}
+
+/** batterystatus by device id. The first row wins, as the sheet's own MATCH() lookup does. */
+function batteryIndex(batRows) {
+  const byDevice = new Map();
+  const rowsById = new Map();
+  for (const b of batRows) {
+    if (!b.deviceId) continue;
+    if (!rowsById.has(b.deviceId)) rowsById.set(b.deviceId, []);
+    rowsById.get(b.deviceId).push(b.sheetRow);
+    if (!byDevice.has(b.deviceId)) byDevice.set(b.deviceId, b);
+  }
+  const duplicates = [...rowsById].filter(([, v]) => v.length > 1).map(([deviceId, sheetRows]) => ({ deviceId, sheetRows }));
+  return { byDevice, duplicates };
+}
+
+/**
+ * heartbeatstatus is secondary: it supplies each property's "sheet export as
+ * of" stamp and a fallback attribution for unmapped devices, never an
+ * assignment. None of its oddities fail the build; each is returned as a
+ * finding (D5).
+ */
+function heartbeatIndex(hbRows, codes) {
+  const locationsById = new Map();
+  const rowsById = new Map();
+  const stamps = new Map(codes.map((c) => [c, []]));
+  for (const h of hbRows) {
+    if (h.location && stamps.has(h.location) && h.currentTime) stamps.get(h.location).push(h.currentTime);
+    if (!h.deviceId) continue;
+    if (!rowsById.has(h.deviceId)) rowsById.set(h.deviceId, []);
+    rowsById.get(h.deviceId).push(h);
+    if (h.location) {
+      if (!locationsById.has(h.deviceId)) locationsById.set(h.deviceId, new Set());
+      locationsById.get(h.deviceId).add(h.location);
+    }
+  }
+  // Nulls are ignored; a property with no stamp at all is unknown (null).
+  // Rows of one Location should share one CurrentTime. If they ever do not,
+  // the latest is kept and the spread is reported.
+  const currentTimeByProperty = new Map();
+  const currentTimeSpread = [];
+  for (const [code, list] of stamps) {
+    const distinct = [...new Set(list.map((d) => d.getTime()))].sort((a, b) => a - b);
+    currentTimeByProperty.set(code, distinct.length ? new Date(distinct[distinct.length - 1]) : null);
+    if (distinct.length > 1) currentTimeSpread.push({ property: code, values: distinct.map((t) => new Date(t).toISOString()) });
+  }
+  return {
+    locationsById,
+    currentTimeByProperty,
+    duplicateIds: [...rowsById].filter(([, v]) => v.length > 1)
+      .map(([deviceId, v]) => ({ deviceId, sheetRows: v.map((h) => h.sheetRow), locations: v.map((h) => h.location) })),
+    multiLocationIds: [...locationsById].filter(([, s]) => s.size > 1)
+      .map(([deviceId, s]) => ({ deviceId, locations: [...s].sort() })),
+    currentTimeSpread,
+  };
+}
+
+/**
+ * A room's heartbeat, from Particle by id. A blank DeviceId is "no device",
+ * which is not the same statement as "never" (D11): never is a device the
+ * sheet names that Particle has never heard, does not know, or that is not a
+ * device id at all (F3).
+ */
+const NO_DEVICE_BUCKET = 'noDevice';
+
+function roomHeartbeat(row, devicesById, builtAt) {
+  const deviceId = row.deviceId || null;
+  const api = deviceId ? devicesById.get(deviceId) || null : null;
+  const heard = api && api.last_heard ? new Date(api.last_heard) : null;
+  const reporting = Boolean(heard && !isNaN(heard));
+  const daysSilent = reporting ? (builtAt - heard) / DAY_MS : null;
+  const noDevice = !deviceId && !row.deviceIdProblem;
+  return {
+    deviceId,
+    // D8: the display name is Particle's, by id. The sheet's Device# text is
+    // never read, and no name is ever resolved into an assignment.
+    deviceName: api && api.name ? String(api.name) : null,
+    known: Boolean(api),
+    reporting,
+    lastHeartbeat: reporting ? heard : null,
+    daysSilent,
+    bucket: noDevice ? NO_DEVICE_BUCKET : bucketByDays(daysSilent, THRESHOLDS.heartbeatAge),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Validators (D5): each returns findings and never throws
+// ---------------------------------------------------------------------------
+
+const shortId = (id) => (id ? String(id).slice(-6) : null);
+const nameOf = (devicesById, id) => {
+  const d = id && devicesById ? devicesById.get(id) : null;
+  return d && d.name ? String(d.name) : null;
+};
+const roomOf = (r) => (r && r.room ? r.room.display : null);
+
+/** F1: one device id in two or more rooms, within a property or across properties. */
+function findDuplicateDevices(rows, devicesById) {
+  const byId = new Map();
+  for (const r of rows || []) {
+    if (!r || !r.deviceId) continue;
+    if (!byId.has(r.deviceId)) byId.set(r.deviceId, new Map());
+    const key = r.property + '|' + (r.room ? r.room.key : '');
+    if (!byId.get(r.deviceId).has(key)) byId.get(r.deviceId).set(key, { property: r.property, room: roomOf(r) });
+  }
+  const out = [];
+  for (const [deviceId, rooms] of byId) {
+    if (rooms.size < 2) continue;
+    const list = [...rooms.values()];
+    out.push({
+      flag: 'F1',
+      deviceId,
+      deviceIdShort: shortId(deviceId),
+      deviceName: nameOf(devicesById, deviceId),
+      crossProperty: new Set(list.map((x) => x.property)).size > 1,
+      rooms: list,
+    });
+  }
+  return out;
+}
+
+/**
+ * F2: a row's Location disagrees with the live-property esa_ tag on its
+ * device. Only tagged devices can be checked, so coverage is returned with
+ * the findings - at 9502 most devices carry no tag, and an empty list there
+ * means "could not look", not "nothing wrong".
+ */
+function findLocationTagConflicts(rows, devicesById, liveCodes) {
+  const findings = [];
+  const coverage = {};
+  for (const r of rows || []) {
+    if (!r || !r.deviceId) continue;
+    const c = coverage[r.property] ||
+      (coverage[r.property] = { deviceRows: 0, checkable: 0, untagged: 0, untaggedBaseline: 0, unknownToParticle: 0, pctCheckable: null });
+    c.deviceRows++;
+    const d = devicesById ? devicesById.get(r.deviceId) : null;
+    if (!d) {
+      c.unknownToParticle++;
+      continue;
+    }
+    const tag = liveTagOf(d, liveCodes);
+    if (!tag) {
+      c.untagged++;
+      if ((d.groups || []).some((g) => /^baseline_/i.test(String(g)))) c.untaggedBaseline++;
+      continue;
+    }
+    c.checkable++;
+    if (tag.code !== r.property) {
+      findings.push({
+        flag: 'F2',
+        property: r.property,
+        room: roomOf(r),
+        deviceId: r.deviceId,
+        deviceIdShort: shortId(r.deviceId),
+        deviceName: d.name ? String(d.name) : null,
+        group: tag.group,
+        tagProperty: tag.code,
+      });
+    }
+  }
+  for (const c of Object.values(coverage)) c.pctCheckable = c.deviceRows ? round((100 * c.checkable) / c.deviceRows, 1) : null;
+  return { findings, coverage };
+}
+
+/** F3: a DeviceId that is not a 24-hex id, or that Particle does not know. The room buckets as never. */
+function findDeviceIdProblems(rows, devicesById) {
+  const out = [];
+  for (const r of rows || []) {
+    if (!r) continue;
+    if (r.deviceIdProblem) {
+      out.push({ flag: 'F3', property: r.property, room: roomOf(r), reason: 'not a device id', value: r.deviceIdRaw });
+    } else if (r.deviceId && !(devicesById && devicesById.has(r.deviceId))) {
+      out.push({ flag: 'F3', property: r.property, room: roomOf(r), reason: 'unknown to Particle', value: r.deviceId });
+    }
+  }
+  return out;
+}
+
+/**
+ * F4's note grammar, exactly as CUTOVER.md §5 (D6). Three phrasings name a
+ * unit; "Replaced device" names none and is reported on its own. Battery and
+ * showerhead work ("Replaced batteries recently", "Showerhead replaced") match
+ * none of them. Notes are free text: this parse only ever produces a FINDING,
+ * never an assignment.
+ */
+const NOTE_UNIT = /P\d?-?\d+/.source;
+const NOTE_PHRASES = [
+  { kind: 'replaced with', re: new RegExp('\\breplaced\\s+with\\s+(' + NOTE_UNIT + ')\\b', 'i') },
+  { kind: 'installed', re: new RegExp('\\b(' + NOTE_UNIT + ')\\s+installed\\b', 'i') },
+  { kind: 'correct device is', re: new RegExp('\\bcorrect\\s+device\\b[^.]*?\\bis\\s+(' + NOTE_UNIT + ')\\b', 'i') },
+];
+const NOTE_UNNAMED = /\breplaced\s+device\b/i;
+
+function parseReplacementNote(text) {
+  if (typeof text !== 'string' || !text.trim()) return null;
+  for (const p of NOTE_PHRASES) {
+    const m = p.re.exec(text);
+    if (m) return { kind: p.kind, name: m[1] };
+  }
+  return NOTE_UNNAMED.test(text) ? { kind: 'unnamed', name: null } : null;
+}
+
+/**
+ * A note's unit name -> exactly one Particle device, by exact, trimmed,
+ * case-insensitive name. Never by digits: "P2-0823" does not become
+ * "P-0823" - a digits-only match is how the wrong unit gets named.
+ */
+function resolveNamedUnit(name, devicesByName) {
+  const key = name === null || name === undefined ? '' : String(name).trim().toLowerCase();
+  const hits = (key && devicesByName && devicesByName.get(key)) || [];
+  if (hits.length === 1) return { device: hits[0], problem: null, matches: 1 };
+  return { device: null, problem: hits.length ? 'ambiguous name' : 'no exact Particle name', matches: hits.length };
+}
+
+/** F4: a note names a replacement that the DeviceId column does not show. */
+function findNoteReplacementConflicts(rows, devicesByName) {
+  const findings = [];
+  const unnamed = [];
+  let recognised = 0;
+  for (const r of rows || []) {
+    const p = r ? parseReplacementNote(r.notes) : null;
+    if (!p) continue;
+    recognised++;
+    const base = { flag: 'F4', property: r.property, room: roomOf(r), note: r.notes };
+    if (p.kind === 'unnamed') {
+      unnamed.push({ ...base, kind: p.kind, deviceId: r.deviceId || null });
+      continue;
+    }
+    const res = resolveNamedUnit(p.name, devicesByName);
+    if (!res.device) {
+      findings.push({ ...base, kind: p.kind, namedUnit: p.name, reason: res.problem, deviceId: r.deviceId || null });
+      continue;
+    }
+    if (r.deviceId && r.deviceId === String(res.device.id).toLowerCase()) continue; // the sheet agrees
+    findings.push({
+      ...base,
+      kind: p.kind,
+      namedUnit: p.name,
+      namedDeviceId: res.device.id,
+      reason: r.deviceId ? 'DeviceId shows another unit' : r.deviceIdProblem ? 'DeviceId is not a device id' : 'DeviceId is blank',
+      deviceId: r.deviceId || null,
+    });
+  }
+  return { findings, unnamed, recognised };
+}
+
+// ---------------------------------------------------------------------------
+// Attribution and live-but-unmapped (§6)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which live property an unmapped device belongs to: its live esa_ tag, or
+ * else its heartbeatstatus Location. Never the registry, never a bare room
+ * number. An untagged device heartbeatstatus places in more than one Location
+ * is unattributable (D5b), as is one it places in none or outside the fleet.
+ * Unattributable means neither listed nor counted anywhere.
+ */
+function attributeDevice(device, locationsById, liveCodes) {
+  const tag = liveTagOf(device, liveCodes);
+  if (tag) return { property: tag.code, via: 'tag', group: tag.group };
+  const locs = device && locationsById ? locationsById.get(String(device.id).toLowerCase()) : null;
+  if (!locs || locs.size !== 1) return null;
+  const [code] = locs;
+  return liveCodes.has(code) ? { property: code, via: 'exportLocation', group: null } : null;
+}
+
+/**
+ * Live but unmapped: heard within the live window, held by no roomstatus row,
+ * and attributable to a live property. The fleet figure is the sum of the
+ * properties by construction - there is no unattributed pool any more (D3).
+ */
+function findLiveButUnmapped(devices, heldIds, locationsById, properties, builtAt, liveDays) {
+  const liveCodes = new Set(properties.map((p) => p.code));
+  const rows = [];
+  const byProperty = {};
+  let stale = 0;
+  for (const d of devices || []) {
+    if (!d || !d.id) continue;
+    const id = String(d.id).toLowerCase();
+    if (heldIds.has(id)) continue;
+    const who = attributeDevice(d, locationsById, liveCodes);
+    if (!who) continue;
+    const heard = d.last_heard ? new Date(d.last_heard) : null;
+    const age = heard && !isNaN(heard) ? (builtAt - heard) / DAY_MS : null;
+    if (age === null || age > liveDays) {
+      stale++;
+      continue;
+    }
+    const prop = properties.find((p) => p.code === who.property);
+    rows.push({
+      property: prop.code,
+      propertyName: prop.name,
+      deviceName: d.name || null,
+      deviceId: d.id,
+      deviceIdShort: shortId(d.id),
+      group: (liveTagOf(d, liveCodes) || particleGroupCode(d) || {}).group || null,
+      attribution: who.via,
+      lastHeard: d.last_heard || null,
+      ageDays: round(age, 1),
+    });
+    byProperty[prop.code] = (byProperty[prop.code] || 0) + 1;
+  }
+  rows.sort((a, b) => (a.ageDays === null ? 1 : b.ageDays === null ? -1 : a.ageDays - b.ageDays));
+  return { rows, byProperty, stale };
+}
+
+/**
+ * Unplaced telemetry (D10): battery or heartbeat rows for a device no room
+ * holds. A finding for the build log, not a page list; the live, attributable
+ * ones already appear in live-but-unmapped.
+ */
+function findUnplacedTelemetry(batRows, hbRows, heldIds, devicesById, locationsById, liveCodes) {
+  const out = [];
+  const add = (source, row) => {
+    if (!row.deviceId || heldIds.has(row.deviceId)) return;
+    const d = devicesById ? devicesById.get(row.deviceId) : null;
+    out.push({
+      source,
+      sheetRow: row.sheetRow,
+      deviceId: row.deviceId,
+      deviceIdShort: shortId(row.deviceId),
+      deviceName: d && d.name ? String(d.name) : null,
+      groups: d ? (d.groups || []).map(String) : [],
+      location: row.location || null,
+      attribution: d ? attributeDevice(d, locationsById, liveCodes) : null,
+      lastHeard: d ? d.last_heard || null : null,
+    });
+  };
+  for (const b of batRows || []) add('batterystatus', b);
+  for (const h of hbRows || []) add('heartbeatstatus', h);
+  return out;
 }
 
 /**
@@ -1581,7 +2258,15 @@ function dailyRecord(data) {
 
 // planRoomOverrideMerge and resolveRoomOverride are exported for the override
 // unit tests; nothing in the pipeline calls them from outside this file.
-module.exports = { normalize, report, dailyRecord, OUT_FILE, planRoomOverrideMerge, resolveRoomOverride };
+// The rest of the second line is exported for test-cutover.js.
+module.exports = {
+  normalize, report, dailyRecord, OUT_FILE, planRoomOverrideMerge, resolveRoomOverride,
+  locationCode, readDeviceIdCell, requireHeaders, parseRoomstatusRows, parseBatteryRows, parseHeartbeatRows,
+  partitionRoomRows, batteryIndex, heartbeatIndex, roomHeartbeat, NO_DEVICE_BUCKET,
+  serialToWallClock, zonedWallClockToUtc, parseSheetDateTime, zonedDate,
+  findDuplicateDevices, findLocationTagConflicts, findDeviceIdProblems, parseReplacementNote, resolveNamedUnit,
+  findNoteReplacementConflicts, attributeDevice, findLiveButUnmapped, findUnplacedTelemetry, liveTagOf,
+};
 
 if (require.main === module) {
   try {
