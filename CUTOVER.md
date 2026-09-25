@@ -1,7 +1,8 @@
 # CUTOVER.md — consolidated-workbook cutover contract
 
 **Block 1 of 5.** Written 2026-09-25 against `c561bd5` in a read-only session. It was refreshed the same
-day against Priya's 11:48 CDT re-export, and Ian's decisions were recorded in §9.
+day against Priya's 11:48 CDT re-export, and Ian's decisions were recorded in §9. The decisions for Block 2
+(D5b, D6, D8, D10, D11, D13, D14, D15, D16) were recorded in §9 on the `cutover` branch the same day.
 
 This is the contract Blocks 2–5 implement. For background, see
 [`docs/CONSOLIDATION-FINDINGS.md`](docs/CONSOLIDATION-FINDINGS.md) (the Sep 8–9 investigation).
@@ -95,10 +96,10 @@ Where the two disagree, this document wins, because the sheet has moved since th
 | Tabs required | `roomstatus`, `batterystatus`, `heartbeatstatus`. `devicenames` exists and is neither required nor read. |
 | Header row | **`roomstatus`:** row 2, read with `sheet_to_json(ws, { range: 1, defval: null, raw: true })`. Row 1 is a counter formula and is **never read**, including by `sheetHeaders()` (`normalize.js:147`), which reads row index 0. **Other tabs:** row 1. |
 | Required headers | Headers are matched with `findKey` (`normalize.js:158`), which trims each header before testing it. The patterns carry their own anchors: `^…$` for exact names, and `^` alone where a date suffix follows. |
-| | **`roomstatus`:** `/^location$/i`, `/^rooms?$/i`, `/^deviceid$/i`, `/^status$/i`, `/^action item/i`, `/^notes/i`, `/^battery status/i` (date suffix, currently `[Sep 25, 2026]`), `/^calibration risk/i`. `/^device\s*#/i` (header `Device# `, with a trailing space) is required only if D8 chooses the sheet name for display. |
+| | **`roomstatus`:** `/^location$/i`, `/^rooms?$/i`, `/^deviceid$/i`, `/^status$/i`, `/^action item/i`, `/^notes/i`, `/^battery status/i` (date suffix, currently `[Sep 25, 2026]`), `/^calibration risk/i`. `/^device\s*#/i` (header `Device# `, with a trailing space) is **not** required: D8 chose the Particle name. |
 | | **`batterystatus`:** `ParticleDeviceId`, `LastTimestamp` |
 | | **`heartbeatstatus`:** `ParticleDeviceId`, `CurrentTime`, `Location` |
-| FAIL loudly | A missing tab. A missing required header. A configured property with zero `roomstatus` rows, checked **after** `Location` is converted to a string code (§3). **Proposed (D16):** also fail unless every in-scope row lands in exactly one property, which guards FINDINGS §3.1. |
+| FAIL loudly | A missing tab. A missing required header. A configured property with zero `roomstatus` rows, checked **after** `Location` is converted to a string code (§3). **Decided (D16):** also fail unless every in-scope row lands in exactly one property, which guards FINDINGS §3.1. |
 | Today's data | 3/3 tabs present. Every required header above is present. No property has zero rows. |
 
 ---
@@ -107,7 +108,7 @@ Where the two disagree, this document wins, because the sheet has moved since th
 
 | column / rule | contract |
 |---|---|
-| `Location` (both tabs) | A **number** in all 319 `roomstatus` rows and all 282 `heartbeatstatus` rows. Convert it to a 4-digit **string** code before comparing with `PROPERTIES[].code`. A number-to-string compare fails silently: in `roomstatus` it yields zero rows (the zero-rows FAIL catches that); in `heartbeatstatus` it empties every Location attribution (§6) and every per-property `CurrentTime` (§7), and nothing catches it. A `roomstatus` row whose code is outside the three is excluded and never counted (0 today). Whether it is also listed is D15. |
+| `Location` (both tabs) | A **number** in all 319 `roomstatus` rows and all 282 `heartbeatstatus` rows. Convert it to a 4-digit **string** code before comparing with `PROPERTIES[].code`. A number-to-string compare fails silently: in `roomstatus` it yields zero rows (the zero-rows FAIL catches that); in `heartbeatstatus` it empties every Location attribution (§6) and every per-property `CurrentTime` (§7), and nothing catches it. A `roomstatus` row whose code is outside the three is excluded and never counted (0 today). **Decided (D15):** it is dropped and logged, not listed. |
 | `Rooms` | Normalize with `normRoom` (`102.0`→`"102"`; letter suffixes kept); the key is lowercased. A duplicate (property, room) keeps every row and raises the existing duplicate note (0 today). |
 | `DeviceId` | `normStr`, valid only if it matches `/^[0-9a-f]{24}$/i`. Blank means no device: 15 cells are formulas returning `""` and 2 are absent. A non-blank value that is not 24-hex, or not known to Particle, is **flagged F3 and bucketed `never`**. It never fails the build (0 today). |
 | `Status` | `normStr(...) \|\| 'Unknown'`. Triage is Issue + Check. |
@@ -116,7 +117,7 @@ Where the two disagree, this document wins, because the sheet has moved since th
 | Battery age | `batterystatus.LastTimestamp`, joined by `ParticleDeviceId` **only**, and measured against build time. |
 | `Calibration Risk` | Read and carried as text: No 189, No data 88, Yes 20, No savings 12, Maybe risky 8, Too many FPs 2. How it is displayed is a Block-level choice. No savings metric is derived from it. |
 | `Notes from/to Ops` | Display text. Parsed only by F4, and never for assignment. It falls inside the banned-string scan (`render.js:151`); see D7. |
-| **Never read** | **`roomstatus`:** row 1; `Days with no Heartbeat` and `Days with no Shower` (formulas, and one hardcodes a date); `Last Heartbeat [..]`; `Last Shower`; `Device# ` unless D8 chooses it. **`batterystatus`:** `RoomNumber`, `LastHeartbeat`, `BatteryVoltage_V` (the roomstatus voltage is a lookup of it). **`heartbeatstatus`:** `RoomNumber`, `LastHeartbeat`, `TimeDiff`. **`devicenames`:** the whole tab. |
+| **Never read** | **`roomstatus`:** row 1; `Days with no Heartbeat` and `Days with no Shower` (formulas, and one hardcodes a date); `Last Heartbeat [..]`; `Last Shower`; `Device# ` (D8). **`batterystatus`:** `RoomNumber`, `LastHeartbeat`, `BatteryVoltage_V` (the roomstatus voltage is a lookup of it). **`heartbeatstatus`:** `RoomNumber`, `LastHeartbeat`, `TimeDiff`. **`devicenames`:** the whole tab. |
 | **Sheet datetimes** | **Decided (D4): fixed in Block 2.** Parse sheet datetimes as America/Chicago, DST-aware, with no new dependency. **Verify each timestamp column against Particle** wherever the same event exists, and do not assume one zone for the whole workbook: the sheet's own `Days with no Shower` formula subtracts `5/24`. Today the pipeline has no time-zone handling, and Netlify and Actions parse in UTC. |
 | Padding | `batterystatus` has 604 trailing blank rows, which `sheet_to_json` already drops (268 data rows). |
 
@@ -138,10 +139,10 @@ Where the two disagree, this document wins, because the sheet has moved since th
 | join | key | notes |
 |---|---|---|
 | room → device | `roomstatus.DeviceId` | Nothing else. No fallback. |
-| device → liveness | Particle `id` | `last_heard` against build time: <2 d fresh, 2–7 aging, >7 stale, else never. **Recommended (D11):** report *no device* (blank DeviceId) separately from *never*. |
+| device → liveness | Particle `id` | `last_heard` against build time: <2 d fresh, 2–7 aging, >7 stale, else never. **Decided (D11):** report *no device* (blank DeviceId) separately from *never*. |
 | device → battery age | `batterystatus.ParticleDeviceId` | Never by `RoomNumber`. |
-| device → attribution (unmapped only) | A live `esa_####` / `esa-####` group via `particleGroupCode`; else `heartbeatstatus.Location` by id | Keep the anchored regex: `baseline_6_shelves_esa_wifi_spi` must not match. **A Location-attributed device is labelled "attributed by export Location" on Reconciliation (D2, decided).** For an untagged device with more than one `heartbeatstatus.Location`, see D5b (open). |
-| device → display name | **D8, open** | Particle name by id (recommended), or the `Device# ` text. They differ on 3 rows: 6178/418 (`P2-0823` vs Particle `P-0823`), and 6197/226 and 6197/237 (sheet `P-`, Particle `P2-`). **`Device# ` must never be resolved to an id**; that is exactly what caused the §0 outage. |
+| device → attribution (unmapped only) | A live `esa_####` / `esa-####` group via `particleGroupCode`; else `heartbeatstatus.Location` by id | Keep the anchored regex: `baseline_6_shelves_esa_wifi_spi` must not match. **A Location-attributed device is labelled "attributed by export Location" on Reconciliation (D2, decided).** **Decided (D5b):** an untagged device with more than one `heartbeatstatus.Location` is unattributable. |
+| device → display name | **D8, decided: Particle name by id** | Not the `Device# ` text, which is never read. They differ on 3 rows: 6178/418 (`P2-0823` vs Particle `P-0823`), and 6197/226 and 6197/237 (sheet `P-`, Particle `P2-`). **`Device# ` must never be resolved to an id**; that is exactly what caused the §0 outage. |
 
 ---
 
@@ -228,8 +229,8 @@ P2-0891 left this list when the Sep 25 export put it in 6197/103.
 | Heartbeats as of | `builtAt` | Unchanged. It is `new Date()` at `normalize.js:696`, seconds after the Particle pull (`particle.pulledAt`). |
 | Page built | `builtAt` | Unchanged. |
 | Battery-data badge | per-property median of `batteryAgeDays` | Unchanged mechanics. **All three read `stale`:** 6197 10.9 d, 6178 9.8 d, 9502 9.5 d (Central-parsed; an unfixed UTC host reads 11.1 / 10.0 / 9.7). The lag floor is 8.06 d. **The Sep 25 export did not refresh `batterystatus`**, so a Sep 25 "sheet export as of" stamp sits beside Sep 17 battery data. The badge, not the export stamp, is the honest battery-freshness signal. |
-| Sheet header date | the `[Sep 25, 2026]` suffix | Today `snapshot.headerLabel` and `labelMatchesSnapshot` are read from the `Last Heartbeat [..]` header via `sheetHeaders()` on row index 0 (`normalize.js:311-316`, `1205-1223`, `1247-1248`; rendered at `template.html:1021`). On `roomstatus` that row is the banner, so the label silently becomes null. **D14 (open):** derive the label from the `Battery Status [..]` header on row 2, or delete these sites together. The Sep 25 export shows why a header date alone cannot vouch for battery data. |
-| `rooms[].lastChecked` | — | **Recommended (D13): delete.** It is the per-property export stamp, copied onto every row. If it goes, these change together: `normalize.js:870-873`; `render.js:117-120` (which becomes an assertion that every `properties[].snapshot` carries a `currentTime` key, null allowed); `render.js:205`; and `template.html:757`. |
+| Sheet header date | the `[Sep 25, 2026]` suffix | Today `snapshot.headerLabel` and `labelMatchesSnapshot` are read from the `Last Heartbeat [..]` header via `sheetHeaders()` on row index 0 (`normalize.js:311-316`, `1205-1223`, `1247-1248`; rendered at `template.html:1021`). On `roomstatus` that row is the banner, so the label silently becomes null. **Decided (D14): delete these sites together.** The Sep 25 export shows why a header date alone cannot vouch for battery data. |
+| `rooms[].lastChecked` | — | **Decided (D13): delete.** It is the per-property export stamp, copied onto every row. If it goes, these change together: `normalize.js:870-873`; `render.js:117-120` (which becomes an assertion that every `properties[].snapshot` carries a `currentTime` key, null allowed); `render.js:205`; and `template.html:757`. |
 
 ---
 
@@ -297,21 +298,27 @@ P2-0891 left this list when the Sep 25 export put it in 6197/103.
 | **D9** | **The Ok-but-stale/no-device rooms** (54 as of the Sep 25 export) are surfaced as a **Reconciliation list in Block 4**. Status is never overridden. |
 | **H1** | **PENDING.** Plotting trend x by record index is a scope change, for Ian to decide before Block 3. |
 
-**Still open**
+**Decided by Ian for Block 2, 2026-09-25** (implemented on the `cutover` branch)
+
+| # | decision |
+|---|---|
+| **D5b** | **An untagged device with more than one `heartbeatstatus.Location` is unattributable:** neither listed nor counted. (P2-0433 is two-valued today, but it is tagged and placed, so moot.) |
+| **D6** | **The F4 rule exactly as §5:** recognise `Replaced with <name>`, `<name> installed` and `correct device … is <name>`; exclude battery and showerhead work; resolve by exact, trimmed, case-insensitive Particle name, never by digits. 28 findings; the unnamed `Replaced device` at 6178/302 is shown separately. |
+| **D8** | **Display name = Particle name by id.** `Device# ` is never read and never resolved to an id. |
+| **D10** | **No page list** for unplaced telemetry. It is logged in the normalize report; the live, attributable devices already appear in live-but-unmapped. |
+| **D11** | **Split *no device* from *never* in the data** (6 → 17 blank DeviceIds). Display is Block 3. |
+| **D13** | **Delete `rooms[].lastChecked`** with its lockstep sites (§7). |
+| **D14** | **Delete the sheet-header date label** with its sites (§7). D5's per-property stamp supersedes it, and the Sep 25 export shows a header date cannot vouch for battery data. |
+| **D15** | **Drop out-of-scope `roomstatus` rows, and log them.** |
+| **D16** | **FAIL unless every in-scope row lands in exactly one property** (§2). |
+
+**Pending for Block 3** (not implemented in Block 2)
 
 | # | finding | options | recommendation |
 |---|---|---|---|
-| **D5b** | `heartbeatstatus.Location` is two-valued for P2-0433 (tagged, and placed, so moot today) | An untagged device with >1 Location is unattributable / take the first | **Unattributable:** neither listed nor counted |
-| **D6** | The F4 rule (§5) | As in §5 | **As in §5:** 28 findings, with 6178/302 shown separately |
 | **D7** | `render.js:151` fails the build on "The Lab" / "Fort Custer" / "ESA 9829" anywhere in the payload. Free-text notes now reach the page (0 hits today). | Keep it fatal / fatal on structured fields and a finding on free text | **A finding on free text** |
-| **D8** | Display name (§4) | Particle by id / `Device# ` | **Particle by id.** `Device# ` is never resolved to an id. |
-| **D10** | Unplaced telemetry (§5) | No page list / list the attributable rows | **No new page list.** The live, attributable ones already appear in live-but-unmapped; log the rest. |
-| **D11** | *No device* vs *never* (§4) | Split / keep lumped | **Split** (6 → 17 blank DeviceIds) |
 | **D12** | The F2 blind spot (§5) | Show / omit | **Show** |
-| **D13** | Delete `rooms[].lastChecked` (§7) | Delete / keep | **Delete**, with the lockstep in §7 |
-| **D14** | Sheet header date label (§7) | Derive from `Battery Status` on row 2 / delete | **Delete**. D5's per-property stamp supersedes it, and the Sep 25 export shows a header date cannot vouch for battery data. |
-| **D15** | Out-of-scope `roomstatus` rows (§3) | List / drop | **Drop, and log them** |
-| **D16** | Fail unless each in-scope row lands in exactly one property (§2) | Add / skip | **Add** |
+| **H1** | See above | — | — |
 | **H2** | Clerical steps are unmarked outside the fleet Triage chart (§8) | Extend `annotate` / accept | **Extend** it to the fleet unmapped chart and the property charts |
 
 ---
