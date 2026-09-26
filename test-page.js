@@ -384,8 +384,16 @@ function runPage(payload, search = '', opts = {}) {
     console,
   };
   if (opts.now !== undefined) ctx.Date = ClockDate;
-  vm.runInNewContext(PAGE_SCRIPT, ctx, { filename: 'template.html' });
+  // opts.tolerateThrow keeps what the page drew before it threw, as error.
+  let error = null;
+  try {
+    vm.runInNewContext(PAGE_SCRIPT, ctx, { filename: 'template.html' });
+  } catch (e) {
+    if (!opts.tolerateThrow) throw e;
+    error = e;
+  }
   return {
+    error,
     html: (id) => byId(id).innerHTML,
     text: (id) => byId(id).textContent,
     el: byId,
@@ -828,6 +836,7 @@ t('the banner sits above the header, outside every view, and starts hidden', () 
   const tag = (html.match(/<div id="staleBanner"[^>]*>/) || [])[0];
   assert.ok(tag, 'no #staleBanner element');
   assert.ok(/\shidden[\s>]/.test(tag), tag);
+  assert.ok(/\srole="alert"/.test(tag), tag);
   const at = html.indexOf(tag);
   assert.ok(at > html.indexOf('<body>') && at < html.indexOf('<header>'), 'the banner must come before the header');
 });
@@ -872,6 +881,22 @@ t('left open, the page re-checks hourly: crossing the cutoff turns the banner on
   assert.strictEqual(bannerOf(page), STALE(7));
   page.advance(DAYMS);
   assert.strictEqual(daysIn(bannerOf(page)), 8);
+});
+t('an hourly check that finds the same text leaves the banner alone, so it is not announced again', () => {
+  const page = runPage(payloadOf(fixture()), '', { now: AT + 8 * DAYMS });
+  const el = page.el('staleBanner');
+  el.innerHTML = 'untouched';
+  page.advance(HOUR);
+  assert.strictEqual(el.innerHTML, 'untouched');
+  page.advance(DAYMS);
+  assert.strictEqual(daysIn(bannerOf(page)), 9);
+});
+t('the banner is set before anything else, so a page that breaks further down still shows it', () => {
+  const p = payloadOf(fixture());
+  p.rooms = null;
+  const page = runPage(p, '', { now: AT + 8 * DAYMS, tolerateThrow: true });
+  assert.ok(page.error, 'this payload should break the rest of the page');
+  assert.strictEqual(bannerOf(page), STALE(8));
 });
 t('the banner stands on every view', () => {
   for (const v of ['', '?v=rooms', '?v=recon', '?v=triage']) {
