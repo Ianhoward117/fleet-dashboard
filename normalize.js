@@ -32,14 +32,8 @@ const fs = require('fs');
 const path = require('path');
 const XLSX = require('xlsx');
 const {
-  PROPERTIES, THRESHOLDS, EXCLUDED_REGISTRY_TABS, PARTICLE, SHEET_TIME_ZONE, SOURCE_TABS, OUT_OF_SCOPE_NAMES,
+  PROPERTIES, THRESHOLDS, SHEET_TIME_ZONE, SOURCE_TABS, OUT_OF_SCOPE_NAMES,
 } = require('./config');
-const PARTICLE_PRODUCT_ID = PARTICLE.productId;
-// The override is a committed source file, not fetched data, so it is read
-// through fetch.js's validator rather than from data/raw/. That way
-// `node normalize.js` reflects an edit to it immediately, without spending
-// 13 network requests on a re-fetch just to see the effect.
-const { loadRoomOverrides } = require('./fetch');
 
 const RAW_DIR = path.join(__dirname, 'data', 'raw');
 const PARTICLE_FILE = path.join(RAW_DIR, 'particle-devices.json');
@@ -73,18 +67,6 @@ function normNum(v) {
   if (isBad(s)) return null;
   const n = parseFloat(s.replace(/[^0-9.eE+-]/g, ''));
   return Number.isFinite(n) ? n : null;
-}
-
-function normDate(v) {
-  if (v instanceof Date) return isNaN(v) ? null : v;
-  if (v === null || v === undefined) return null;
-  const s = String(v).trim();
-  if (isBad(s)) return null;
-  // Guard against duration strings like "242 days 07:46:38.018342" that
-  // have leaked into timestamp columns in at least one export.
-  if (/^\d+\s+days?\b/i.test(s)) return null;
-  const d = new Date(s);
-  return isNaN(d) ? null : d;
 }
 
 /**
@@ -122,7 +104,7 @@ const round = (n, p = 2) => (n === null || n === undefined ? null : Math.round(n
 // Sheet helpers
 // ---------------------------------------------------------------------------
 
-function readWorkbook(key, requiredSheets = [], opts = { cellDates: true }) {
+function readWorkbook(key, requiredSheets = [], opts = { cellDates: false }) {
   const file = path.join(RAW_DIR, `${key}.xlsx`);
   if (!fs.existsSync(file)) {
     throw new Error(`NORMALIZE FAILED: missing ${file}\n  Run fetch.js first (or let build.js do it).`);
@@ -145,26 +127,6 @@ function readWorkbook(key, requiredSheets = [], opts = { cellDates: true }) {
     );
   }
   return wb;
-}
-
-const WO_SHEETS = ['Room Status', 'py_export_batterystatus', 'py_export_heartbeatstatus'];
-
-const sheetRows = (wb, name) =>
-  XLSX.utils.sheet_to_json(wb.Sheets[name], { defval: null, raw: true });
-
-const sheetHeaders = (wb, name) =>
-  (XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: null, raw: true })[0] || [])
-    .filter((h) => h !== null)
-    .map(String);
-
-/**
- * Room Status headers embed a snapshot date that differs per property
- * ("Battery Status            [Jun 12, 2026]"), and 6197's device column
- * has a trailing space. So every column is found by pattern, never by
- * exact string or position.
- */
-function findKey(row, re) {
-  return Object.keys(row).find((k) => re.test(k.trim())) || null;
 }
 
 // ---------------------------------------------------------------------------
@@ -234,10 +196,10 @@ function readParticleDevices() {
     );
   }
   const byId = new Map();
-  // Device NAME index, for the room-assignment override - that file keys on
-  // the name a person reads off a unit in a corridor, not on a 24-hex id.
-  // Names are not guaranteed unique by Particle, so every device is kept and
-  // ambiguity is only an error if an override actually asks for that name.
+  // Device NAME index, for F4 (resolveNamedUnit): a replacement note names
+  // the unit a person reads off it in a corridor, not a 24-hex id. Names are
+  // not guaranteed unique by Particle, so every device is kept, and a name
+  // several devices share is an F4 finding ('ambiguous name'), never an error.
   const byName = new Map();
   for (const d of raw.devices) {
     if (!d || !d.id) continue;
@@ -254,15 +216,6 @@ function readParticleDevices() {
     count: raw.devices.length,
     devices: raw.devices,
   };
-}
-
-/** First esa_#### / esa-#### group on a device, as a bare property code. */
-function particleGroupCode(device) {
-  for (const g of device.groups || []) {
-    const m = /^esa[-_](\d{4})/i.exec(String(g));
-    if (m) return { code: m[1], group: g };
-  }
-  return null;
 }
 
 /** A device's Particle groups as strings; anything but an array reads as none. */
@@ -1162,433 +1115,6 @@ function findUnplacedTelemetry(batRows, hbRows, heldIds, devicesById, locationsB
   return out;
 }
 
-/**
- * Device IDs that are deliberately out of scope: the lab bench, Fort Custer,
- * and the fully-uninstalled 9829. Read from the registry workbook purely so
- * they can be filtered OUT of the live-but-unmapped list. Nothing from these
- * tabs is ever rendered.
- *
- * A missing tab fails the build rather than silently disabling the filter -
- * that would let decommissioned hardware surface on the page.
- */
-function readExcludedDeviceIds(registryWb) {
-  const byTab = {};
-  const tabSets = new Map();
-  const all = new Set();
-  for (const tab of EXCLUDED_REGISTRY_TABS) {
-    if (!registryWb.SheetNames.includes(tab)) {
-      throw new Error(
-        `NORMALIZE FAILED: registry workbook has no tab ${JSON.stringify(tab)}.\n` +
-          `  It is listed in EXCLUDED_REGISTRY_TABS and is read to keep out-of-scope\n` +
-          `  devices off the page. Refusing to build with the filter disabled.\n` +
-          `  Tabs present: ${registryWb.SheetNames.map((n) => JSON.stringify(n)).join(', ')}`
-      );
-    }
-    const ids = new Set();
-    for (const r of sheetRows(registryWb, tab)) {
-      const id = normStr(r['Device ID']);
-      if (id) {
-        ids.add(id);
-        all.add(id);
-      }
-    }
-    tabSets.set(tab, ids);
-    byTab[tab] = ids.size;
-  }
-  // Logged here rather than returned into the payload: these tab names are
-  // out-of-scope site names, and render.js rightly refuses to let them into
-  // normalized data at all. The build log is the correct place for them.
-  console.log('NORMALIZE  exclusion tabs read (devices kept off the page)');
-  for (const [tab, count] of Object.entries(byTab)) {
-    console.log(`  ${JSON.stringify(tab).padEnd(38)} ${String(count).padStart(4)} device ids`);
-  }
-  console.log(`  ${'total distinct excluded ids'.padEnd(38)} ${String(all.size).padStart(4)}`);
-  return { all, byTab, tabSets };
-}
-
-// ---------------------------------------------------------------------------
-// Per-source extraction
-// ---------------------------------------------------------------------------
-
-/** Room Status: the human triage layer. Spine of the room universe. */
-function readRoomStatus(wb) {
-  const rows = sheetRows(wb, 'Room Status');
-  const headers = sheetHeaders(wb, 'Room Status');
-
-  // Snapshot date the humans wrote into the header, e.g. "[Jun 12, 2026]".
-  const hbHeader = headers.find((h) => /last heartbeat/i.test(h)) || '';
-  const labelMatch = hbHeader.match(/\[([^\]]+)\]/);
-  const headerLabel = labelMatch ? labelMatch[1].trim() : null;
-
-  const probe = rows[0] || {};
-  const K = {
-    room: findKey(probe, /^installed\s*rooms?$/i),
-    device: findKey(probe, /^device\s*#/i),
-    lastHb: findKey(probe, /^last heartbeat/i),
-    daysHb: findKey(probe, /^days with no heartbeat/i),
-    lastShower: findKey(probe, /^last shower/i),
-    daysShower: findKey(probe, /^days with no shower/i),
-    battery: findKey(probe, /^battery status/i),
-    status: findKey(probe, /^status$/i),
-    action: findKey(probe, /^action item/i),
-    notes: findKey(probe, /^notes/i),
-  };
-  if (!K.room || !K.status) {
-    throw new Error(
-      `NORMALIZE FAILED: "Room Status" is missing an Installed Rooms or Status column.\n` +
-        `  headers seen: ${headers.join(' | ')}`
-    );
-  }
-
-  const out = [];
-  for (const r of rows) {
-    const room = normRoom(r[K.room]);
-    if (!room) continue; // blank spacer rows
-    out.push({
-      room,
-      deviceName: K.device ? normStr(r[K.device]) : null,
-      lastHeartbeat: K.lastHb ? normDate(r[K.lastHb]) : null,
-      daysNoHeartbeat: K.daysHb ? normNum(r[K.daysHb]) : null,
-      lastShower: K.lastShower ? normDate(r[K.lastShower]) : null,
-      daysNoShower: K.daysShower ? normNum(r[K.daysShower]) : null,
-      battery: K.battery ? normNum(r[K.battery]) : null,
-      status: normStr(r[K.status]),
-      actionItem: K.action ? normStr(r[K.action]) : null,
-      notes: K.notes ? normStr(r[K.notes]) : null,
-    });
-  }
-  return { rows: out, headerLabel, hasDeviceColumn: Boolean(K.device) };
-}
-
-/** py_export_heartbeatstatus: authoritative "what actually reported". */
-function readHeartbeatExport(wb) {
-  const rows = sheetRows(wb, 'py_export_heartbeatstatus');
-  const byRoom = new Map();
-  const byDevice = new Map();
-  let currentTime = null;
-
-  for (const r of rows) {
-    const deviceId = normStr(r.ParticleDeviceId);
-    const room = normRoom(r.RoomNumber);
-    const lastHeartbeat = normDate(r.LastHeartbeat);
-    const ct = normDate(r.CurrentTime);
-    // Every row in an export carries the same CurrentTime; keep the latest
-    // seen so a partially-refreshed export still reports honestly.
-    if (ct && (!currentTime || ct > currentTime)) currentTime = ct;
-    if (!deviceId) continue;
-    const rec = { deviceId, room, lastHeartbeat, timeDiff: normStr(r.TimeDiff) };
-    byDevice.set(deviceId, rec);
-    if (room) {
-      // If two devices claim one room, keep the more recent heartbeat.
-      const prev = byRoom.get(room.key);
-      if (!prev || (lastHeartbeat && prev.lastHeartbeat && lastHeartbeat > prev.lastHeartbeat) || !prev.lastHeartbeat) {
-        byRoom.set(room.key, rec);
-      }
-    }
-  }
-  return { byRoom, byDevice, currentTime, rowCount: rows.length };
-}
-
-/**
- * py_export_batterystatus: voltages only.
- *
- * This sheet's own LastHeartbeat column is unreliable - at 6178 all 29 rows
- * contain a duration string rather than a timestamp - so it is ignored
- * entirely and heartbeats come from py_export_heartbeatstatus.
- */
-function readBatteryExport(wb) {
-  const rows = sheetRows(wb, 'py_export_batterystatus');
-  const byDevice = new Map();
-  const byRoom = new Map();
-  let corruptHeartbeatRows = 0;
-
-  for (const r of rows) {
-    const deviceId = normStr(r.ParticleDeviceId);
-    const room = normRoom(r.RoomNumber);
-    const volts = normNum(r.BatteryVoltage_V);
-    if (r.LastHeartbeat !== null && !(r.LastHeartbeat instanceof Date)) corruptHeartbeatRows++;
-    const rec = { deviceId, room, volts, lastTimestamp: normDate(r.LastTimestamp) };
-    if (deviceId) byDevice.set(deviceId, rec);
-    if (room && !byRoom.has(room.key)) byRoom.set(room.key, rec);
-  }
-  return { byDevice, byRoom, rowCount: rows.length, corruptHeartbeatRows };
-}
-
-/**
- * Registry tab: what we believe we installed.
- *
- * Rows carrying a device but no room are inventory/spares, not placements;
- * they are counted but excluded from the room map. Where a room does stack
- * multiple devices (replacement history), the latest Install Date wins.
- */
-function readRegistry(wb, tabName) {
-  const rows = sheetRows(wb, tabName);
-  const placements = [];
-  let inventoryOnly = 0;
-
-  for (const r of rows) {
-    const deviceId = normStr(r['Device ID']);
-    const room = normRoom(r['Room Number']);
-    if (!deviceId) continue;
-    if (!room) {
-      inventoryOnly++;
-      continue;
-    }
-    placements.push({
-      deviceName: normStr(r['Device Name']),
-      deviceId,
-      mac: normStr(r['MAC Address']),
-      room,
-      installDate: normDate(r['Install Date']),
-      notes: normStr(r['Notes']),
-    });
-  }
-
-  // Collapse to current-device-per-room by latest Install Date.
-  const byRoom = new Map();
-  let collapsedRows = 0;
-  for (const p of placements) {
-    const prev = byRoom.get(p.room.key);
-    if (!prev) {
-      byRoom.set(p.room.key, p);
-      continue;
-    }
-    collapsedRows++;
-    const a = prev.installDate ? prev.installDate.getTime() : -Infinity;
-    const b = p.installDate ? p.installDate.getTime() : -Infinity;
-    if (b >= a) byRoom.set(p.room.key, p);
-  }
-
-  const byDevice = new Map();
-  for (const p of placements) byDevice.set(p.deviceId, p);
-
-  return { placements, byRoom, byDevice, inventoryOnly, collapsedRows, rowCount: rows.length };
-}
-
-// ---------------------------------------------------------------------------
-// Room-assignment overrides
-// ---------------------------------------------------------------------------
-
-class RoomOverrideApplyError extends Error {}
-
-/**
- * Turn one validated override block into a room-key -> device map.
- *
- * The override names devices; the pipeline joins on device id. Resolution
- * happens here, against the product device list already fetched, so no extra
- * request is made and there is no second opinion about which devices exist.
- *
- * Room keys are produced by the same normRoom() the roster uses, so a key can
- * only fail to match the roster because the room genuinely is not on it - not
- * because one side wrote "102" and the other 102.0. Rooms are never coerced
- * to numbers: "A322" is a real room at 6178.
- *
- * Everything here throws rather than skipping the offending row. Half an
- * override applied is the worst outcome available: the page reads as
- * corrected while some rooms still show the mapping the file exists to
- * replace.
- */
-function resolveRoomOverride(prop, block, particle) {
-  const where = 'room override for ' + prop.code;
-  const liveCodes = new Set(PROPERTIES.map((p) => p.code));
-  const byRoom = new Map();
-
-  for (const entry of block.rooms) {
-    const room = normRoom(entry.room);
-    if (!room) {
-      throw new RoomOverrideApplyError(
-        'NORMALIZE FAILED: ' + where + ' has an unusable room key ' + JSON.stringify(entry.room) + '.'
-      );
-    }
-
-    // Two distinct spellings that normalise onto one roster key ("102" and
-    // "102.0") would otherwise let the later one silently win.
-    const clash = byRoom.get(room.key);
-    if (clash) {
-      throw new RoomOverrideApplyError(
-        'NORMALIZE FAILED: ' + where + ' has two entries for room ' + JSON.stringify(room.display) +
-          ' (' + JSON.stringify(clash.sourceRoom) + ' and ' + JSON.stringify(entry.room) + ') once room ' +
-          'numbers are normalised.\n  One room, one device. Refusing to guess which line is current.'
-      );
-    }
-
-    const matches = particle.byName.get(entry.deviceName.trim().toLowerCase()) || [];
-    if (!matches.length) {
-      throw new RoomOverrideApplyError(
-        'NORMALIZE FAILED: ' + where + ' names device ' + JSON.stringify(entry.deviceName) +
-          ' for room ' + JSON.stringify(room.display) + ', which matches no device in product ' +
-          PARTICLE_PRODUCT_ID + '.\n' +
-          '  The product device list is the full inventory, so an unmatched name is a\n' +
-          '  typo or a device that was never claimed into the product. Either way the\n' +
-          '  room cannot be mapped, and guessing is not an option.'
-      );
-    }
-    if (matches.length > 1) {
-      throw new RoomOverrideApplyError(
-        'NORMALIZE FAILED: ' + where + ' names device ' + JSON.stringify(entry.deviceName) +
-          ' for room ' + JSON.stringify(room.display) + ', but ' + matches.length + ' devices in the ' +
-          'product carry that name.\n  ids: ' + matches.map((d) => d.id).join(', ') +
-          '\n  Refusing to guess which physical unit is in the room.'
-      );
-    }
-
-    const device = matches[0];
-
-    // A device tagged to a DIFFERENT live property is a real contradiction:
-    // the override says it is here, the cloud says it is somewhere else we
-    // also render. No group tag at all is ordinary and is not an error - the
-    // tag is fleet housekeeping and plenty of units have never been given one.
-    const groups = (device.groups || []).map(String);
-    const foreign = groups
-      .map((g) => {
-        const m = /^esa[-_](\d{4})/i.exec(g);
-        return m ? { code: m[1], group: g } : null;
-      })
-      .filter((g) => g && liveCodes.has(g.code) && g.code !== prop.code);
-    if (foreign.length) {
-      throw new RoomOverrideApplyError(
-        'NORMALIZE FAILED: ' + where + ' assigns device ' + JSON.stringify(entry.deviceName) +
-          ' to room ' + JSON.stringify(room.display) + ', but that device carries the group tag ' +
-          foreign.map((g) => JSON.stringify(g.group)).join(', ') + ', which belongs to another live ' +
-          'property.\n' +
-          '  groups on the device: ' + (groups.length ? groups.join(', ') : '(none)') + '\n' +
-          '  Two properties cannot both hold one unit. Resolve it in the field or in\n' +
-          '  Particle before the override claims it.'
-      );
-    }
-
-    byRoom.set(room.key, {
-      sourceRoom: entry.room,
-      room,
-      deviceName: device.name || entry.deviceName,
-      deviceId: device.id,
-      groups,
-    });
-  }
-
-  return byRoom;
-}
-
-/**
- * Work out what a "merge" override does to a property, before any row is built.
- *
- * Merge is the conservative mode: the override wins the rooms it names, and
- * every other room keeps whatever the sheets resolve for it today. Use it where
- * the sheet map is broadly working and only some rooms are wrong - which is the
- * opposite of the case "replace" exists for.
- *
- * This has to be a whole-property pass rather than a per-room decision, because
- * of rule (b): a device the override places in room X may currently be sitting
- * in room Y of the same property, and it has to be taken out of Y. A per-room
- * loop cannot see that. This is the failure mode replace could never produce -
- * replace drops every prior assignment before it starts, so nothing can be left
- * behind in a second room.
- *
- * The rules, in order:
- *   a. an override room takes the override's device; whatever was there is
- *      dropped and recorded;
- *   b. if that device was assigned to another room of this property, that other
- *      room is vacated and the move is recorded. No device occupies two rooms;
- *   c. rooms the override does not name are left completely alone;
- *   d. override rooms that are not on the sheet roster are recorded and
- *      otherwise ignored - no room is invented, so no denominator moves.
- */
-function planRoomOverrideMerge(prop, rosterRows, hb, reg, ovByRoom) {
-  // Distinct roster rooms, first-seen order. A room occupying several Room
-  // Status rows is still one room holding one device.
-  const rosterKeys = new Set();
-  const rosterRoom = new Map();
-  for (const t of rosterRows) {
-    if (rosterKeys.has(t.room.key)) continue;
-    rosterKeys.add(t.room.key);
-    rosterRoom.set(t.room.key, { display: t.room.display, deviceName: t.deviceName });
-  }
-
-  // The assignment each roster room resolves to today, by exactly the
-  // precedence the pipeline already uses: the heartbeat export first, then the
-  // registry. This is the "before" picture merge builds on top of.
-  const assigned = new Map();
-  const roomOfDevice = new Map();
-  for (const key of rosterKeys) {
-    const tele = hb.byRoom.get(key) || null;
-    const regRec = reg ? reg.byRoom.get(key) || null : null;
-    const deviceId = (tele && tele.deviceId) || (regRec && regRec.deviceId) || null;
-    if (!deviceId) continue;
-    assigned.set(key, {
-      deviceId,
-      deviceName:
-        (regRec && regRec.deviceId === deviceId ? regRec.deviceName : null) ||
-        (rosterRoom.get(key) || {}).deviceName ||
-        null,
-      source: tele && tele.deviceId ? 'export' : 'registry',
-    });
-    // First room wins if the sheets already had one device in two rooms; that
-    // pre-existing inconsistency is not this function's to resolve.
-    if (!roomOfDevice.has(deviceId)) roomOfDevice.set(deviceId, key);
-  }
-
-  const overwritten = [];
-  const relocated = [];
-  const notInRoster = [];
-  const touched = new Set();
-
-  for (const [roomKey, rec] of ovByRoom) {
-    // (d) not on the roster: record it, invent nothing.
-    if (!rosterKeys.has(roomKey)) {
-      notInRoster.push(rec);
-      continue;
-    }
-
-    // (a) the override device takes this room.
-    const displaced = assigned.get(roomKey) || null;
-    if (displaced && displaced.deviceId !== rec.deviceId) {
-      overwritten.push({
-        roomKey,
-        room: rec.room.display,
-        fromDeviceId: displaced.deviceId,
-        fromDeviceName: displaced.deviceName,
-        fromSource: displaced.source,
-        toDeviceId: rec.deviceId,
-        toDeviceName: rec.deviceName,
-      });
-      // That device now has no room here, so a later entry naming it must not
-      // read as a relocation out of a room it no longer occupies.
-      if (roomOfDevice.get(displaced.deviceId) === roomKey) roomOfDevice.delete(displaced.deviceId);
-    }
-
-    // (b) no device in two rooms: vacate wherever else it currently sits.
-    const otherKey = roomOfDevice.get(rec.deviceId);
-    if (otherKey !== undefined && otherKey !== roomKey) {
-      const vacating = assigned.get(otherKey);
-      if (vacating && vacating.deviceId === rec.deviceId) {
-        assigned.delete(otherKey);
-        touched.add(otherKey);
-        relocated.push({
-          deviceId: rec.deviceId,
-          deviceName: rec.deviceName,
-          fromRoomKey: otherKey,
-          fromRoom: (rosterRoom.get(otherKey) || {}).display || otherKey,
-          fromSource: vacating.source,
-          toRoomKey: roomKey,
-          toRoom: rec.room.display,
-        });
-      }
-    }
-
-    assigned.set(roomKey, {
-      deviceId: rec.deviceId,
-      deviceName: rec.deviceName,
-      source: 'override',
-    });
-    roomOfDevice.set(rec.deviceId, roomKey);
-    touched.add(roomKey);
-  }
-
-  // (c) is the absence of anything above: a room never added to `touched` is
-  // read straight from the existing sheet resolution when rows are built.
-  return { assigned, touched, overwritten, relocated, notInRoster, rosterKeys };
-}
-
 // ---------------------------------------------------------------------------
 // Consolidated workbook: reader
 // ---------------------------------------------------------------------------
@@ -2155,11 +1681,11 @@ function dailyRecord(data) {
   };
 }
 
-// planRoomOverrideMerge and resolveRoomOverride are exported for the override
-// unit tests; nothing in the pipeline calls them from outside this file.
-// The rest of the second line is exported for test-cutover.js.
+// normalize, report and dailyRecord are the pipeline's (build.js, snapshot.js);
+// render.js and verify-live.js take PAGE_FINDING_KEYS and LOG_FINDING_KEYS.
+// The rest is exported for test-cutover.js and test-page.js.
 module.exports = {
-  normalize, report, dailyRecord, OUT_FILE, planRoomOverrideMerge, resolveRoomOverride,
+  normalize, report, dailyRecord, OUT_FILE,
   locationCode, readDeviceIdCell, requireHeaders, readSheetTab, parseRoomstatusRows, parseBatteryRows, parseHeartbeatRows,
   partitionRoomRows, batteryIndex, heartbeatIndex, roomHeartbeat, NO_DEVICE_BUCKET,
   serialToWallClock, zonedWallClockToUtc, parseSheetDateTime, zonedDate,
