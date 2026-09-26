@@ -334,6 +334,21 @@ const TRENDS = {
     // when this shipped, so today's record is the first one that carries the new
     // numbers - the same convention as the entries above.
     { date: '2026-08-29', label: '6178 override -> merge', charts: ['fleet', '6178'] },
+    // The dashboard moved onto Priya's consolidated workbook: roomstatus.DeviceId is the
+    // whole room->device chain; the legacy workbooks, registry and override are retired.
+    // No single field event happened on this date, but the step folds that source change
+    // together with field work the sheet recorded while the legacy sheets were frozen (e.g.
+    // 12 units installed at 6178 on 9/16 now report). The chart cannot separate the two;
+    // read it as neither a recovery nor a regression. Triage steps 161 -> 62 and the fleet
+    // awaiting-room-mapping line 73 -> 3 (the untagged pool is no longer counted), exactly
+    // as CUTOVER.md §10 predicted against the 2026-09-25 export; 6178's Ok line steps
+    // 13 -> 105 on its card.
+    //
+    // Dated the 26th: history/2026-09-26.json, written by the run dispatched right after
+    // the merge (03:07Z), is the first record carrying consolidated values. The 25th's
+    // record was written by the legacy build and keeps legacy values. Scope 'all': the
+    // source switch moves every chart, fleet and property alike.
+    { date: '2026-09-26', label: 'consolidated sheet', charts: 'all' },
   ],
 };
 

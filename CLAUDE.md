@@ -220,31 +220,38 @@ These no longer run. Their code is still present until Block 5 deletes it
   `actions/setup-node@v7`, node24). Check each action's releases before
   bumping.
 
-## Current state (2026-09-25, Block 3 complete on `cutover`, not yet merged)
+## Current state (2026-09-26, cutover merged)
 
-- **`main` is `b4f8c4b`** and serves the legacy build (live `builtAt`
-  2026-09-25T19:03Z) — the interim override fix that ended the Sep 16–24
-  outage. **`cutover`** carries Blocks 2 and 3 on top of it, unpushed. The merge
-  waits for Ian's go (STOP #2).
-- **Against the 2026-09-25 11:48 CDT export** (build 2026-09-25T20:56Z,
-  numbers from `node normalize.js`): 319 rooms, **Ok 257 / Issue 50 / Check 12
-  / Unknown 0, 62 in the triage queue** (6197 68/26/0, 6178 105/2/2,
-  9502 84/22/10). 302 rooms hold a device (301 distinct ids), **17 have no
-  device** (3/7/7), 0 never heard. Live-but-unmapped **3** (6197 1, 9502 2).
-  Heartbeat buckets move daily; at that build: fresh 166 / aging 41 /
-  stale 95.
+- **The cutover is live.** Blocks 2 and 3 were fast-forwarded onto `main` on
+  2026-09-26 at 03:06Z (`b4f8c4b..58d28af`, no merge commit). The tag
+  **`pre-cutover`** marks `b4f8c4b`, the last legacy build (the interim
+  override fix that ended the Sep 16–24 outage). Rollback is Netlify's
+  Deploys → the last pre-cutover deploy → Publish deploy, never a rewrite of
+  `main`. The dispatched `daily-refresh` run 36213819929 went green and wrote
+  `history/2026-09-26.json` (`24386e9`).
+- **The first consolidated record, 2026-09-26** (from the 2026-09-25 11:48 CDT
+  export): 319 rooms, **Ok 257 / Issue 50 / Check 12 / Unknown 0, 62 triage
+  rows** (6197 68/26/0, 6178 105/2/2, 9502 84/22/10), unmappedLive **3**
+  (6197 1, 9502 2), liveUnder2d 164. 302 rooms hold a device (301 distinct
+  ids), **17 have no device** (3/7/7), 0 never heard. The record before it,
+  2026-09-25, was written by the legacy build: 161 triage rows, unmappedLive 73.
+  An independent re-derivation from the raw workbook matched the pipeline on
+  every room and reproduced CUTOVER.md §10's NEW column exactly.
+- **The cutover `TRENDS` annotation** is `{ date: '2026-09-26', label:
+  'consolidated sheet', charts: 'all' }`: the fleet triage line steps
+  161 -> 62, the awaiting-room-mapping line 73 -> 3, and 6178's Ok 13 -> 105.
+  Read it as neither a recovery nor a regression (config.js says why).
 - **Findings:** F1 1 (P2-0433 in 6178/428 and 9502/308), F2 1 (9502/308),
   F3 0, F4 28 (+1 unnamed note at 6178/302); 30 rooms flagged. F2 coverage
   6197 93.4 % · 6178 86.3 % · 9502 32.1 %. Log: 10 unplaced telemetry rows
   (7 devices), 0 out-of-scope rows, 0 note hits, 0 two-tag devices.
 - **Battery is stale everywhere:** the Sep 25 export did not refresh
-  `batterystatus` (newest reading Sep 17), so the badges read ~11.0 / 9.9 /
-  9.6 d. That is honest; do not "fix" it in code.
-- **History:** records for Aug 16 – Sep 15 and Sep 25. **Sep 16–24 do not
-  exist and are never backfilled** (CUTOVER.md §0). The Sep 25 record was
-  written by the legacy build at 19:03Z; the first dispatched run after the
-  merge rewrites the day's record with consolidated values (same-day
-  overwrite) and the cutover `TRENDS` annotation is dated on that record.
+  `batterystatus` (newest reading Sep 17), so the badges read ~11 / 10 / 10 d
+  and climb daily until Priya re-exports. That is honest; do not "fix" it in
+  code.
+- **History:** records for Aug 16 – Sep 15, then Sep 25 (legacy values) and
+  Sep 26 onwards (consolidated). **Sep 16–24 do not exist and are never
+  backfilled** (CUTOVER.md §0); every trend chart shows them as a gap.
 - **Tests:** `npm test` — 15 override + 78 cutover + 57 page, identical in
   both zones.
 

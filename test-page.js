@@ -611,6 +611,7 @@ t('each existing annotation carries the scope its comment describes', () => {
     ['2026-08-27', '6178 room map overridden', ['fleet', '6178']],
     ['2026-08-27', '6197 + 9502 room overrides', ['fleet', '6197', '9502']],
     ['2026-08-29', '6178 override -> merge', ['fleet', '6178']],
+    ['2026-09-26', 'consolidated sheet', 'all'],
   ]);
   assert.deepStrictEqual(R.annotationProblems(TRENDS, ['6197', '6178', '9502']), []);
 });
