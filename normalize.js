@@ -142,6 +142,27 @@ function bucketByDays(days, group) {
 }
 
 /**
+ * A property's battery-age summary, for its freshness badge. The median is
+ * taken on each room's exact age, recomputed from its batteryTimestamp, and
+ * rounded once to the room rows' 0.1 d: a median of ages that were already
+ * rounded can land a step off (11.1 where the exact median is 11.165). A room
+ * counts as a reading when its row carries a batteryAgeDays.
+ */
+function batteryAgeSummary(rooms, builtAt) {
+  const read = rooms.filter((r) => r.batteryAgeDays !== null && r.batteryAgeDays !== undefined);
+  const ages = read.map((r) => (builtAt - Date.parse(r.batteryTimestamp)) / DAY_MS);
+  const med = median(ages);
+  return {
+    readings: ages.length,
+    roomsWithout: rooms.length - ages.length,
+    medianDays: round(med, 1),
+    oldestDays: round(ages.length ? Math.max(...ages) : null, 1),
+    bucket: bucketByDays(med, THRESHOLDS.batteryAge),
+    approximate: true, // collector runs intermittently; timestamps are not precise
+  };
+}
+
+/**
  * Action Items are free text with recurring patterns. Collapse them to a
  * small set of canonical types so the triage view can offer a real filter,
  * while the original text is still shown to the operator verbatim.
@@ -1288,17 +1309,7 @@ function normalize() {
 
     // Battery age drives the per-property freshness badge: heartbeats are
     // live at build time, so battery is the only thing that can go stale.
-    const batteryAges = rooms.map((r) => r.batteryAgeDays).filter((n) => n !== null && n !== undefined);
-    const batteryAgeMedian = median(batteryAges);
-    const batteryAgeOldest = batteryAges.length ? Math.max(...batteryAges) : null;
-    const batteryAge = {
-      readings: batteryAges.length,
-      roomsWithout: rooms.length - batteryAges.length,
-      medianDays: round(batteryAgeMedian, 1),
-      oldestDays: round(batteryAgeOldest, 1),
-      bucket: bucketByDays(batteryAgeMedian, THRESHOLDS.batteryAge),
-      approximate: true, // collector runs intermittently; timestamps are not precise
-    };
+    const batteryAge = batteryAgeSummary(rooms, builtAt);
 
     if (counts.rooms !== counts.distinctRooms) {
       const dupList = duplicateRoomRows
@@ -1688,7 +1699,7 @@ module.exports = {
   normalize, report, dailyRecord, OUT_FILE,
   locationCode, readDeviceIdCell, requireHeaders, readSheetTab, parseRoomstatusRows, parseBatteryRows, parseHeartbeatRows,
   partitionRoomRows, batteryIndex, heartbeatIndex, roomHeartbeat, NO_DEVICE_BUCKET,
-  serialToWallClock, zonedWallClockToUtc, parseSheetDateTime, zonedDate,
+  serialToWallClock, zonedWallClockToUtc, parseSheetDateTime, zonedDate, batteryAgeSummary,
   findDuplicateDevices, findLocationTagConflicts, findDeviceIdProblems, parseReplacementNote, resolveNamedUnit,
   findNoteReplacementConflicts, attributeDevice, findLiveButUnmapped, findUnplacedTelemetry, liveTagOf,
   liveTagInfo, findConflictingTagDevices, flagRooms, findNotesNamingOutOfScope, PAGE_FINDING_KEYS, LOG_FINDING_KEYS,

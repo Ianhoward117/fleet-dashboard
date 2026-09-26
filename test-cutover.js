@@ -746,6 +746,25 @@ t('battery is joined by device id only; first row wins, duplicates reported', ()
   assert.deepStrictEqual(idx.duplicates.map((d) => d.deviceId), [hex(1)]);
   assert.strictEqual('room' in idx.byDevice.get(hex(1)), false, 'RoomNumber is never read');
 });
+t('battery-age median: taken on exact ages and rounded once, not on the rounded room ages', () => {
+  // Room rows as normalize writes them: the timestamp, and the age rounded to 0.1 d.
+  const rooms = (ages) => ages.map((d) => ({
+    batteryTimestamp: d === null ? null : ago(d),
+    batteryAgeDays: d === null ? null : Math.round(d * 10) / 10,
+  }));
+  // Rounded rows 10.6 and 11.7 average to 11.149999... and show 11.1; the exact median 11.165 is 11.2.
+  const a = N.batteryAgeSummary(rooms([10.64, 11.69, null]), BUILT);
+  assert.deepStrictEqual(keep(a), { readings: 2, roomsWithout: 1, medianDays: 11.2, oldestDays: 11.7, bucket: 'stale', approximate: true });
+  assert.deepStrictEqual(Object.keys(a), ['readings', 'roomsWithout', 'medianDays', 'oldestDays', 'bucket', 'approximate'], 'key order is payload bytes');
+  // And the other way: rounded 10.8 and 11.7 give 11.25 and show 11.3; exact 11.235 is 11.2.
+  assert.strictEqual(keep(N.batteryAgeSummary(rooms([10.78, 11.69]), BUILT).medianDays), 11.2);
+  // An odd count takes the middle exact age.
+  assert.strictEqual(keep(N.batteryAgeSummary(rooms([1.04, 1.96, 30]), BUILT).medianDays), 2);
+  assert.deepStrictEqual(
+    N.batteryAgeSummary(rooms([null]), BUILT),
+    { readings: 0, roomsWithout: 1, medianDays: null, oldestDays: null, bucket: null, approximate: true }
+  );
+});
 t('heartbeatstatus: per-property CurrentTime, nulls ignored, none -> null; ids with two Locations reported', () => {
   const hb = N.parseHeartbeatRows(
     [
