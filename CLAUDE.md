@@ -137,6 +137,23 @@ This file is the working context: current state, decisions, and the traps.
   beats the browser's own `[hidden]`). The per-card **Triage** KPI (Issue +
   Check) is drawn in summary only: the full view is unchanged and leaves that
   count to the room list.
+- **Worklists and filter links (Block 4).** Reconciliation's lists
+  (`renderLists()` in `template.html`) read only the payload: the rooms, their
+  flags and `findings`. Rooms ship no `sheetRow`, so an F4 row takes its room
+  by property, room and DeviceId among the rows tagged F4, first come first
+  taken (`f4Items()`). The "Marked Ok, but…" reasons (`OK_BUT`) take every
+  cutoff from the payload: stale is the open-ended heartbeat bucket, critical
+  the battery class. Every finding count and "open in All rooms" link is a
+  real `href` built by `queryOf()`, the function `writeUrl()` uses, and a
+  click applies it through `readParams()`, which also reads the address bar on
+  load. `readParams()` keeps only values a control offers: `BATTERY_FILTERS`
+  and `SORT_KEYS` mirror the template's Battery options and sortable headers,
+  so **a new Battery option or sortable column goes there too** (a test fails
+  if they drift). URL parameters: `v`, `prop`, `status`, `action`, `batt`,
+  `hb`, `flag`, `q`, `sort`/`dir`, and `view=summary`, which wins. Harness:
+  `listFixture()`, `listBlock()`, `listRows()` (a list's `<thead>` row is a
+  `<tr>` too), `page.listCsv(key)`, and `page.goto(attrs, mods)`, whose
+  `closest()` honours `[attr]` selectors as a browser would.
 
 ## Commands
 
@@ -185,6 +202,14 @@ Everything else is vanilla Node and vanilla browser JS.
   does not show). Each lands on its room row as a `flags` entry. **Only
   structure is fatal:** a missing tab or required header, a property with zero
   rows, a row landing in two properties (D16).
+- **F4's extra fields (Block 4):** each F4 finding carries the unit its note
+  names as Particle's list has it: `namedDeviceId`, `namedDeviceName`,
+  `namedHeartbeatBucket`, `namedDaysSilent`, bucketed by the same
+  `deviceHeartbeat()` a room uses; all four are null when the name matches no
+  device or several. F4 findings, unnamed ones too, carry `deviceIdCell`:
+  `formula`, `typed` or `empty`, read from the cell by `readSheetTab()`
+  (SheetJS keeps formulas on its default read). The page shows `formula` as
+  "lookup". Nothing else about F4 reaches the page; its note stays on the room.
 - **Stamps:** "Sheet export as of" is `heartbeatstatus.CurrentTime` per
   Location (the header shows the oldest); "Heartbeats as of" and "Page built"
   are `builtAt`. The battery badge is the battery-freshness signal.
@@ -271,6 +296,15 @@ commit that still carries their code: read it there
   rooms, Reconciliation, the flags and findings, F2 coverage, every
   awaiting-room-mapping count and chart, anything naming a device or quoting
   a note, and the CSV export.
+- **Worklists, decided by Ian 2026-09-26:** built without waiting for Priya's
+  feedback, for working through the sheet (mainly Priya). Full view only, on
+  Reconciliation: F4 "Replacement not in DeviceId" (the backfill list, with
+  the named unit's heartbeat and the DeviceId cell kind), D9 as "Marked Ok,
+  but…" widened to critical batteries (reasons as chips; Status is never
+  changed), and F1, F2, F3 (an empty state, not a blank). Each has a count, a
+  CSV, and an "open in All rooms" link where the existing filters can express
+  it; no filter was invented for a link. The Aug 29 marker reads "6178 room
+  map filled in".
 
 ## Current state (2026-09-26, cutover merged)
 
@@ -315,16 +349,24 @@ commit that still carries their code: read it there
   duplicated-rows line now names the consolidated sheet's roomstatus tab,
   not the retired Room Status (the last Block 5 leftover). The tag
   `pre-summary` marks `main` just before it.
-- **Tests:** `npm test` — 79 cutover + 87 page, identical in both zones.
+- **Worklists (Block 4), 2026-09-26:** on the 16:08Z build of the Sep 25
+  export: F4 **29** rows (28 + 6178/302 unnamed; cells 24 lookup, 5 typed;
+  named units 14 heard < 2 d, **12 silent 100 d or more**, 2 not in
+  Particle), Marked Ok, but… **60** (no device 5, never 0, stale 47, battery
+  critical 20; 25 of the 60 are F4 rooms), F1 1, F2 1, F3 0. The pinned-clock
+  payload differs from the one before only by the 115 new F4 fields and the
+  marker label. The room list, its CSV and the rollup are unchanged; the
+  Reconciliation tab's count still covers findings and the reconciliation
+  lists only. The tag `pre-worklists` marks `main` just before it.
+- **Tests:** `npm test` — 86 cutover + 109 page, identical in both zones.
 
 ## Open items
 
-- **Block 4:** the Reconciliation worklists (D9's Ok-but-stale / no-device
-  list; full F1–F4 worklists). Block 5 is done.
 - **Questions for Priya** are in CUTOVER.md §12 — chiefly typing replacements
   into `DeviceId` at install time (all 28 F4 findings are at 6178, where
   notes record replacements the column does not yet show), P2-0433's two
-  rooms, and P2-0823.
+  rooms, and P2-0823. The F4 list now also shows that 12 of the named units
+  have not reported in 100 days or more.
 - **Scheduling the export is still the highest-value fix.** Battery, rooms
   and triage all wait on it, and the Sep 25 export did not even refresh
   `batterystatus`. Until it is scheduled, read the battery badge before quoting

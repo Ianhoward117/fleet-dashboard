@@ -42,26 +42,40 @@ that used them.
 | --- | --- |
 | **Fleet rollup** (default) | One card per property: rooms / reporting / never heard / no device, the Ok-Issue-Check mix, status and heartbeat trends, a heartbeat-age histogram, the battery distribution, the property's **sheet export stamp**, and a colour-coded **battery-data badge**. A fleet strip on top trends total triage rows and devices awaiting room mapping. Leads because it answers "how is the fleet doing" before the room list answers "which one do I fix". |
 | **All rooms** | Every room in the fleet, one line each, sorted worst-first: `Issue`, then `Check`, then `Ok`, longest-silent first within each. Filter by property, status, action type, battery class, **heartbeat state** and **sheet finding**; free-text search across room, device, action, notes and findings; every column sorts. Selecting **Issue + Check** turns this into the ops triage queue. |
-| **Reconciliation** | Where the data disagrees with itself: a **sheet findings** summary (F1–F4, below), devices that are live but in no room, duplicated room rows, and room devices Particle does not know. |
+| **Reconciliation** | Where the data disagrees with itself: a **sheet findings** summary (F1–F4, below), the **worklists** that take those findings one room at a time (below), devices that are live but in no room, duplicated room rows, and room devices Particle does not know. |
 
 The status filter carries live counts — `Issue + Check (62)`, `Ok (257)` on
 the Sep 25 export — so the size of the queue is visible without applying it.
 
 ### Sharing a view
 
-Filters, search and sort are kept in the address bar, so a filtered view is a
-link. Copy the URL after filtering and the recipient sees the same rows:
+Filters, search and sort are kept in the address bar as you change them, so a
+filtered view is a link, and a refresh keeps it. Copy the URL after filtering
+and the recipient sees the same rows:
 
 | Link | Shows |
 | --- | --- |
 | `?v=rooms&prop=6178&status=attention` | 6178's work queue |
 | `?v=rooms&prop=6178&action=Battery` | 6178's battery worklist |
 | `?v=rooms&flag=F4` | every room whose note names a unit the sheet does not show |
+| `?v=rooms&status=Ok&hb=stale` | rooms marked Ok whose device has not been heard in over 7 days |
 | `?v=rooms&hb=noDevice` | every room with no device |
 | `?view=summary` | the summary view, for presenting (below) |
 
+The parameters: `v` (`rollup`, `rooms`, `recon`), `prop` (a property code),
+`status` (`attention` for Issue + Check, or `Issue`, `Check`, `Ok`), `action`,
+`batt` (`critical`, `warn`, `ok`, `unknown`), `hb` (`fresh`, `aging`, `stale`,
+`never`, `noDevice`), `flag` (`any`, `F1`–`F4`), `q` (search text), and `sort`
+with `dir` (`asc` or `desc`). A value the page's controls cannot show — a typo,
+a property no longer on the page — is dropped rather than applied unseen.
+
+Every **Open in All rooms** link on Reconciliation is itself one of these
+addresses: click it to filter here, or copy it (right-click → Copy Link) or
+open it in a new tab to share that list.
+
 Links saved when a separate triage tab existed (`?v=triage`) still work: they
-open the room list pre-filtered to everything needing attention.
+open the room list pre-filtered to everything needing attention. So do old
+`#rooms`-style links.
 
 **Export CSV** downloads exactly what is on screen — same filters, same order —
 for a printable worklist rather than a webpage. It includes each room's
@@ -83,7 +97,8 @@ filters you had open.
   whenever it applies.
 - **It hides:** the All rooms and Reconciliation tabs and everything in them
   (every room row, device name and note, the F1–F4 flags and the findings
-  summary, F2 coverage, **Export CSV**), and every awaiting-room-mapping count
+  summary, F2 coverage, the worklists with their links and CSVs, **Export
+  CSV**), and every awaiting-room-mapping count
   and chart, on the fleet strip and on the cards.
 - While it is on, the address bar reads `?view=summary` and nothing else, so no
   filter or search text shows there. A refresh stays in summary but forgets the
@@ -152,6 +167,28 @@ Two caveats the Reconciliation summary states beside the counts:
 A typed placeholder in `DeviceId` (`NA`, `No device`, `-`) means **no device**,
 not F3.
 
+### Worklists (Reconciliation)
+
+Below the findings summary, each finding — and the rooms marked Ok that the
+data disagrees with — is a list someone can work through, one room per row.
+They are for fixing the **sheet** (and whatever feeds it); the dashboard never
+changes a room itself. Every list has its count in its heading, a **Download
+CSV** button for that list alone, and an **Open in All rooms** link wherever
+the room list's filters can show the same rooms. A list with nothing in it
+says so.
+
+| List | What each row says | What to do with it |
+| --- | --- | --- |
+| **Replacement not in DeviceId** (F4) | The room; the unit `DeviceId` shows (Particle's name for it, or *blank*); the unit the note names (or *unnamed*); **Named unit** — whether that unit is reporting, *heard 5h ago* or *heard 101d ago* in the room list's colours, or *not in Particle* when no device has that exact name; **Cell**; and the note as written. By property, then room. | The backfill list: put the named unit's id into `DeviceId`. **Cell** says where: a **lookup** cell is the sheet's formula, which follows the next export, so correct what it looks up (heartbeatstatus, by Location and room); a **typed** or **empty** cell never follows an export and is corrected in the cell itself. A named unit that has not reported in months is worth a second look before it goes in. |
+| **Marked Ok, but…** | Rooms whose Status is **Ok** while the data disagrees, with a chip per reason: *no device*, *never heard*, *not heard in over 7 days*, *battery critical* (below 3.2 V). By reason in that order, then longest silent first. | Check the room and its status in the sheet. Each reason has its own **Open in All rooms** link (Status Ok plus that heartbeat state or battery class). Many of these rooms at 6178 are also on the F4 list: the sheet still names the unit that was replaced. |
+| **One device, two rooms** (F1) | The device and every room that lists it. | At most one room is right; correct the other's `DeviceId`. |
+| **Location vs Particle tag** (F2) | The room, its device, and the Particle tag that places it elsewhere. | Check which is wrong: the room's Location or the device's tag. F2 sees only tagged devices (the coverage is in the findings summary). |
+| **DeviceId not usable** (F3) | The room, the problem, and what `DeviceId` holds. | Replace it with the room's device id, or clear it if the room has none. |
+
+The cutoffs are the page's own: "over 7 days" is the **> 7 days** heartbeat
+bucket and "critical" the battery class, both from `config.js`. Summary view
+hides every list, with the rest of Reconciliation.
+
 ---
 
 ## Architecture
@@ -213,7 +250,10 @@ external requests from the published page.
 ### What reaches the page, and what does not
 
 `normalize.js` writes two kinds of finding. **Page findings** — F1–F4 and F2's
-coverage — are shipped to the page. **Log findings** — telemetry rows for
+coverage — are shipped to the page. Each F4 finding also carries the unit its
+note names as Particle's device list has it (id, name, heartbeat bucket and
+days silent, all null when the name matches no device or several) and whether
+the room's `DeviceId` cell is a formula, typed, or empty. **Log findings** — telemetry rows for
 devices no room holds, rows outside the three properties, rows with no room
 number, notes that name an out-of-scope site, devices tagged for two
 properties, sheet hygiene — stay in `data/normalized.json` and the build log,
@@ -385,7 +425,7 @@ const TRENDS = {
   windowDays: 30,
   annotations: [
     { date: '2026-08-20', label: '9829 removed', charts: ['fleet'] },
-    { date: '2026-08-29', label: '6178 override -> merge', charts: ['fleet', '6178'] },
+    { date: '2026-08-29', label: '6178 room map filled in', charts: ['fleet', '6178'] },
   ],
 };
 ```
