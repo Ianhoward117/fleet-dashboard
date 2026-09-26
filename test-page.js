@@ -676,7 +676,7 @@ t('each existing annotation carries the scope its comment describes', () => {
     ['2026-08-20', '9829 removed', ['fleet']],
     ['2026-08-27', '6178 room map overridden', ['fleet', '6178']],
     ['2026-08-27', '6197 + 9502 room overrides', ['fleet', '6197', '9502']],
-    ['2026-08-29', '6178 override -> merge', ['fleet', '6178']],
+    ['2026-08-29', '6178 room map filled in', ['fleet', '6178']],
     ['2026-09-26', 'consolidated sheet', 'all'],
   ]);
   assert.deepStrictEqual(R.annotationProblems(TRENDS, ['6197', '6178', '9502']), []);
@@ -821,6 +821,16 @@ t('an annotation on a day with no record is not drawn (the record carries the st
   assert.ok(!/nothing here/.test(page.html('fleetStrip') + page.html('cards')));
 });
 
+t('the Aug 29 marker reads "6178 room map filled in" on the fleet strip and 6178’s card, and nowhere else', () => {
+  const { TRENDS } = require('./config');
+  const page = runPage(R.buildPayload(fixture(), [rec(-28, 60), rec(-27, 50), rec(-26, 50)], TRENDS));
+  const annos = (html) => [...html.matchAll(/<span class="anno"><i><\/i>([^<]*)<\/span>/g)].map((m) => unesc(m[1]));
+  const cards = page.html('cards').split('<div class="card">').slice(1);
+  assert.deepStrictEqual(keep([annos(page.html('fleetStrip')), ...cards.map(annos)]),
+    [['Aug 29 · 6178 room map filled in'], [], ['Aug 29 · 6178 room map filled in'], []]);
+  assert.ok(!/override/.test(page.html('fleetStrip') + page.html('cards')));
+  assert.deepStrictEqual(svgsOf(page.html('fleetStrip')).map(marksOf), [[xOf(2)], [xOf(2)]], 'drawn on its own date');
+});
 // ===========================================================================
 console.log('\nPAGE: the stale-page banner (THRESHOLDS.pageAge)');
 

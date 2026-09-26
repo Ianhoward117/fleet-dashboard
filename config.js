@@ -317,7 +317,7 @@ const TRENDS = {
     // Dated the 29th, not the 30th: history/2026-08-29.json had not been written
     // when this shipped, so today's record is the first one that carries the new
     // numbers - the same convention as the entries above.
-    { date: '2026-08-29', label: '6178 override -> merge', charts: ['fleet', '6178'] },
+    { date: '2026-08-29', label: '6178 room map filled in', charts: ['fleet', '6178'] },
     // The dashboard moved onto Priya's consolidated workbook: roomstatus.DeviceId is the
     // whole room->device chain; the legacy workbooks, registry and override are retired.
     // No single field event happened on this date, but the step folds that source change
