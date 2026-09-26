@@ -1,5 +1,10 @@
 # CUTOVER.md — consolidated-workbook cutover contract
 
+> **Status (2026-09-26):** Blocks 1–3 and 5 are done; Block 4 (the Reconciliation
+> worklists) is not. §11 was executed in Block 5, the commits after the tag
+> `pre-cleanup` (`git log pre-cleanup..`); function names and line numbers in
+> §2–§11 refer to the code as it stood before them. **§12 is still open.**
+
 **Block 1 of 5.** Written 2026-09-25 against `c561bd5` in a read-only session. It was refreshed the same
 day against Priya's 11:48 CDT re-export, and Ian's decisions were recorded in §9. The decisions for Block 2
 (D5b, D6, D8, D10, D11, D13, D14, D15, D16) were recorded in §9 on the `cutover` branch the same day, and so

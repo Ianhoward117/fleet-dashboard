@@ -117,9 +117,6 @@ This file is the working context: current state, decisions, and the traps.
   `VERIFY_NEWER_THAN` it cannot tell a recent old page from the new one, so a
   page failing the checks is polled until the deadline before it fails; pass
   `VERIFY_NEWER_THAN=<previous builtAt>` when checking a specific deploy.
-- **`data/` is gitignored except `data/room-overrides.json`** (`data/*` plus a
-  negation — git will not descend into an ignored *directory*). The override is
-  retired and no longer read; the file and the negation go in Block 5.
 
 ## Commands
 
@@ -129,7 +126,7 @@ node --env-file=.env.local fetch.js      # 1 workbook + 9 Particle pages = 10 re
 node normalize.js    # rebuild data/normalized.json; prints counts, every finding, the log findings
 node render.js       # rebuild dist/index.html from existing JSON (+ history/)
 node snapshot.js     # write today's record to history/  (the workflow does this; not by hand)
-npm test             # override + cutover + page suites, each under TZ=UTC and America/Chicago
+npm test             # cutover + page suites; each re-runs itself under TZ=UTC and America/Chicago
 node verify-live.js  # health-check the published site   (npm run verify)
 node verify-live.js --current   # print the live builtAt, nothing else
 ```
@@ -156,7 +153,8 @@ Everything else is vanilla Node and vanilla browser JS.
   different statements and are kept apart everywhere.
 - **Battery:** voltage is the `roomstatus` column (itself a lookup of
   `batterystatus`); its age is `batterystatus.LastTimestamp`, joined by device
-  id only.
+  id only. A property's battery-age badge is the median of its rooms' exact
+  ages, rounded once for display (`batteryAgeSummary`).
 - **Live but unmapped:** heard ≤ 7 d, held by no room, attributed by the first
   live-property `esa_` tag, else by a single `heartbeatstatus.Location`.
   Devices tagged for two live properties, or placed in two Locations, are
@@ -176,19 +174,24 @@ Everything else is vanilla Node and vanilla browser JS.
 
 ## Retired paths (pointers only)
 
-These no longer run. Their code is still present until Block 5 deletes it
-(CUTOVER.md §11 is the list). Read the history there, not here.
+Deleted in Block 5 (CUTOVER.md §11 was the list). The tag **`pre-cutover`**
+(`b4f8c4b`) is the last build that ran them, and **`pre-cleanup`** is the last
+commit that still carries their code: read it there
+(`git show pre-cutover:fetch.js`), not here.
 
 - **Room-assignment overrides** (`data/room-overrides.json`, `replace` /
   `merge` modes, `heldOut`, `loadRoomOverrides`, `resolveRoomOverride`,
   `planRoomOverrideMerge`, `test-overrides.js`): CUTOVER.md §1 and §11;
-  `git log -- data/room-overrides.json` (from `bfcd178`); the pre-cutover
-  CLAUDE.md at `87892bc`, which documents the `heldOut` trap.
+  `git log -- data/room-overrides.json` (from `bfcd178`); the CLAUDE.md at
+  `pre-cutover` documents the `heldOut` trap. The two-property-claim tests
+  live on as F1 tests in `test-cutover.js`.
 - **The registry workbook and its exclusion tabs**
   (`EXCLUDED_REGISTRY_TABS`, `readRegistry`, `readExcludedDeviceIds`):
   CUTOVER.md §1, §6 and D2/D3.
 - **The three legacy work-order workbooks** (`py_export_*`, `Room Status`,
   `sheetKey`, `registryTab`): CUTOVER.md §0–§3; `docs/CONSOLIDATION-FINDINGS.md`.
+  `probe/02`, `03`, `06` and `07` read them and are frozen; run them from
+  `pre-cutover`.
 
 ## Decisions already made (do not re-litigate)
 
@@ -270,15 +273,17 @@ These no longer run. Their code is still present until Block 5 deletes it
 - **History:** records for Aug 16 – Sep 15, then Sep 25 (legacy values) and
   Sep 26 onwards (consolidated). **Sep 16–24 do not exist and are never
   backfilled** (CUTOVER.md §0); every trend chart shows them as a gap.
-- **Tests:** `npm test` — 15 override + 78 cutover + 70 page, identical in
-  both zones.
+- **Block 5 (cleanup), 2026-09-26:** CUTOVER.md §11 executed. The retired
+  override, registry and legacy code is gone (see Retired paths); the payload
+  was byte-identical before and after, apart from one intended fix: the
+  battery-age median is taken on exact ages (6197 read 11.3 d, exactly 11.2 d).
+  The tag `pre-cleanup` marks `main` just before it.
+- **Tests:** `npm test` — 79 cutover + 70 page, identical in both zones.
 
 ## Open items
 
-- **Blocks 4–5.** Block 4: the Reconciliation worklists (D9's Ok-but-stale /
-  no-device list; full F1–F4 worklists). Block 5: the deletion list in
-  CUTOVER.md §11 (overrides, registry, legacy readers, `test-overrides.js`,
-  the `.gitignore` negation, the dead template blocks).
+- **Block 4:** the Reconciliation worklists (D9's Ok-but-stale / no-device
+  list; full F1–F4 worklists). Block 5 is done.
 - **Questions for Priya** are in CUTOVER.md §12 — chiefly typing replacements
   into `DeviceId` at install time (all 28 F4 findings are at 6178, where
   notes record replacements the column does not yet show), P2-0433's two
@@ -294,9 +299,6 @@ These no longer run. Their code is still present until Block 5 deletes it
   eyes (Cloudflare Access bolts on later).
 - `npm audit` flags xlsx 0.18.5 (prototype pollution, ReDoS). No npm-side fix;
   judged acceptable for a build-time parser reading our own sheet.
-- **Housekeeping, deliberate:** the phone media query in `template.html`
-  repeats the `.livetag` / `.cardnote .await` rules with the same values. Inert.
-  Remove it in a cleanup pass, never mid-feature.
 
 ## Working style Ian asked for
 

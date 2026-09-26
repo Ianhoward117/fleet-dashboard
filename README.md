@@ -30,8 +30,9 @@ There is no fallback — no registry, no override file, no guessing from notes.
 
 The three legacy work-order workbooks, the registry workbook and the
 room-override file were retired when the dashboard moved onto the
-consolidated workbook. See [`CUTOVER.md`](CUTOVER.md) for why, and git history
-for what they did.
+consolidated workbook, and their code has since been deleted. See
+[`CUTOVER.md`](CUTOVER.md) for why; the git tag `pre-cutover` is the last build
+that used them.
 
 ---
 
@@ -472,7 +473,7 @@ Edit, commit, push — Netlify rebuilds automatically.
 
 ```js
 const PROPERTIES = [
-  { code: '6197', name: 'Round Rock - Southwest', tag: null, ... },
+  { code: '6197', name: 'Round Rock - Southwest', tag: null },
   ...
 ];
 ```
@@ -485,9 +486,6 @@ const PROPERTIES = [
 - Removing a property from this array removes it from the dashboard entirely.
   Its rows in the sheet are then dropped and logged, never counted. Add a
   `TRENDS` annotation when you do.
-
-(`sheetKey` and `registryTab` are retired and will be deleted with the rest of
-the legacy paths.)
 
 ### Thresholds
 
