@@ -58,6 +58,7 @@ link. Copy the URL after filtering and the recipient sees the same rows:
 | `?v=rooms&prop=6178&action=Battery` | 6178's battery worklist |
 | `?v=rooms&flag=F4` | every room whose note names a unit the sheet does not show |
 | `?v=rooms&hb=noDevice` | every room with no device |
+| `?view=summary` | the summary view, for presenting (below) |
 
 Links saved when a separate triage tab existed (`?v=triage`) still work: they
 open the room list pre-filtered to everything needing attention.
@@ -65,6 +66,35 @@ open the room list pre-filtered to everything needing attention.
 **Export CSV** downloads exactly what is on screen — same filters, same order —
 for a printable worklist rather than a webpage. It includes each room's
 heartbeat state and its findings in plain words.
+
+### Summary view, for presenting
+
+To show the fleet in a meeting without room-level detail on screen, press
+**Summary** in the header, or open the page with `?view=summary`. A
+**Summary view** bar stands where the tabs were while it is on. To leave, press
+**Full view** on that bar (or **Summary** again): you are back on the tab and
+filters you had open.
+
+- **It shows:** each property card — rooms, reporting, never heard, no device,
+  the Ok / Check / Issue mix, a **Triage** count (Issue + Check, shown in
+  summary only), the status and devices-heard-from trends with their markers,
+  the heartbeat-age bars, the battery classes and the battery-data badge —
+  plus the fleet triage-rows trend, the three stamps, and the stale-page banner
+  whenever it applies.
+- **It hides:** the All rooms and Reconciliation tabs and everything in them
+  (every room row, device name and note, the F1–F4 flags and the findings
+  summary, F2 coverage, **Export CSV**), and every awaiting-room-mapping count
+  and chart, on the fleet strip and on the cards.
+- While it is on, the address bar reads `?view=summary` and nothing else, so no
+  filter or search text shows there. A refresh stays in summary but forgets the
+  filters underneath. With both parameters, summary wins:
+  `?v=rooms&view=summary` opens in summary, and Full view then lands on the
+  room list.
+
+**It is not access control.** It changes only what is drawn. The page still
+carries every room in its embedded data, Full view is one click away, and
+anyone with the link can read the page source. Share a summary link only with
+people you would show the full page to.
 
 ### The three stamps
 

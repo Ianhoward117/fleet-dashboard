@@ -36,7 +36,9 @@ This file is the working context: current state, decisions, and the traps.
   `--screenshot`, on any page, even a plain one with no script. The output is
   written first, so wrap the call in `perl -e 'alarm 15; exec @ARGV' ...` and
   expect exit 142. It will not lay out narrower than 500 px either: check phone
-  width by loading the page in a 390 px iframe.
+  width by loading the page in a 390 px iframe, or drive it over the DevTools
+  protocol with `Emulation.setDeviceMetricsOverride`, which does lay out at
+  390 (`innerWidth` 390, checked 2026-09-26).
 - **The daily bot commits to `main`.** Always `git pull --rebase` before
   pushing. A stale checkout makes `git diff origin/main` look like it deletes
   history files; it does not — they are commits you have not pulled.
@@ -117,6 +119,24 @@ This file is the working context: current state, decisions, and the traps.
   `VERIFY_NEWER_THAN` it cannot tell a recent old page from the new one, so a
   page failing the checks is polled until the deadline before it fails; pass
   `VERIFY_NEWER_THAN=<previous builtAt>` when checking a specific deploy.
+- **Summary view (`?view=summary`) is a redraw, not a smaller payload.** The
+  page reads `summary` from the URL before it draws anything;
+  `renderCards()` and `renderFleetTrends()` consult it, and `setSummary()`
+  redraws both and hides `#tabs`, All rooms and Reconciliation (`show()` draws
+  the rollup whatever tab is remembered underneath). While it is on,
+  `writeUrl()` writes `view=summary` and nothing else: filters and search text
+  are room-level, and the address bar is on screen too. It wins over `?v=`.
+  **A new line on a card or the fleet strip that names a room, a device or a
+  note, or counts a reconciliation worklist (awaiting mapping, findings),
+  must check `summary`.** The card's "N rows cover M distinct rooms" caveat
+  stays on purpose: it qualifies the Rooms number on screen and names no
+  room. The summary tests read what is on screen through `onScreen()` in
+  `test-page.js`, which takes each element's region from `template.html`;
+  static markup and the `[hidden]` CSS rules have tests of their own (the
+  fake DOM applies no CSS, and `nav` / `.viewbar` carry `display:flex`, which
+  beats the browser's own `[hidden]`). The per-card **Triage** KPI (Issue +
+  Check) is drawn in summary only: the full view is unchanged and leaves that
+  count to the room list.
 
 ## Commands
 
@@ -203,7 +223,8 @@ commit that still carries their code: read it there
   2026-08-19** and removed; `render.js` trims non-configured properties from
   history before shipping it.
 - **Tabs:** Fleet rollup (default) → All rooms → Reconciliation. `?v=triage`
-  still resolves to All rooms filtered to Issue + Check.
+  still resolves to All rooms filtered to Issue + Check. `?view=summary`
+  overrides `?v=` (summary view, below).
 - **Heartbeats come from Particle, one endpoint only**, never anything that
   commands or wakes a device. Battery, rooms and triage stay on the sheet.
 - **Site is public-but-unlisted** by choice: no login, `noindex`. Alerts go to
@@ -236,10 +257,20 @@ commit that still carries their code: read it there
   the payload, and `render.js` fails the build without a usable one. It is
   client-side only, so `verify-live.js` cannot see it. Tests fix the clock with
   `runPage(payload, search, { now })` and fire the timer with `advance(ms)`.
-- **A summary-only view for Greg and David is still wanted** (Ian,
-  2026-09-25): an in-page toggle, per the Sep 9 lean, not Cloudflare Access.
-  Not yet scoped. A toggle changes only what is drawn: every room still ships
-  in the page's payload, so it does not settle the access-control open item.
+- **Summary view, decided by Ian 2026-09-26:** Ian and Greg show the
+  dashboard in meetings (e.g. with David) with no room-level detail on
+  screen. It is an on-screen switch on the same page, per the Sep 9 lean: a
+  **Summary** button in the header (`aria-pressed`) or `?view=summary`, a
+  "Summary view" bar in place of the tabs with **Full view** to leave. Not a
+  separate link, not a login, and **not a security boundary**: it changes
+  only what is drawn, every room still ships in the page's payload, and Full
+  view is one click, so it does not settle the access-control open item.
+  Summary shows the cards (Ok / Issue / Check, triage, heartbeat buckets,
+  battery classes, battery badge), the three stamps, the status, live and
+  fleet triage trends with their markers, and the stale banner. It hides All
+  rooms, Reconciliation, the flags and findings, F2 coverage, every
+  awaiting-room-mapping count and chart, anything naming a device or quoting
+  a note, and the CSV export.
 
 ## Current state (2026-09-26, cutover merged)
 
@@ -278,7 +309,13 @@ commit that still carries their code: read it there
   was byte-identical before and after, apart from one intended fix: the
   battery-age median is taken on exact ages (6197 read 11.3 d, exactly 11.2 d).
   The tag `pre-cleanup` marks `main` just before it.
-- **Tests:** `npm test` — 79 cutover + 70 page, identical in both zones.
+- **Summary view, 2026-09-26:** template and tests only; the pinned-clock
+  payload was byte-identical before and after, and the normal view's DOM
+  differs only by the switch, the hidden bar and one label: Reconciliation's
+  duplicated-rows line now names the consolidated sheet's roomstatus tab,
+  not the retired Room Status (the last Block 5 leftover). The tag
+  `pre-summary` marks `main` just before it.
+- **Tests:** `npm test` — 79 cutover + 87 page, identical in both zones.
 
 ## Open items
 
@@ -296,7 +333,8 @@ commit that still carries their code: read it there
   room numbers and device ids. Whether that is acceptable is Ian's call; the
   site itself is unlisted by design.
 - Consider access control before room-level detail goes on screen for external
-  eyes (Cloudflare Access bolts on later).
+  eyes (Cloudflare Access bolts on later). Summary view keeps room detail off
+  the screen in a meeting; it does not keep it out of the page.
 - `npm audit` flags xlsx 0.18.5 (prototype pollution, ReDoS). No npm-side fix;
   judged acceptable for a build-time parser reading our own sheet.
 
