@@ -240,6 +240,21 @@ const THRESHOLDS = {
     okAbove: 3.6, // volts at or above this are healthy
     warnAbove: 3.2, // volts at or above this are marginal; below is critical
   },
+
+  /**
+   * How old the page itself may get, in days since builtAt, before it says so.
+   * From 2026-09-16 to 09-24 the daily build failed and the site kept serving
+   * the Sep 15 build with nothing on screen to say so. The page now judges its
+   * own age in the browser, against the viewer's clock, on load and hourly
+   * while it stays open: past this cutoff a banner above every view says when
+   * it last refreshed. A builtAt it cannot read shows the banner too; one in the
+   * future (the viewer's clock is behind) does not. render.js fails the build
+   * without a usable value, so the page never has to guess one.
+   */
+  pageAge: {
+    confirmed: true, // Ian, 2026-09-25; matches the > 7 d stale cutoff
+    maxDays: 7, // strictly older than this shows the banner
+  },
 };
 
 // ---------------------------------------------------------------------------

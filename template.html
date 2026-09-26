@@ -83,6 +83,15 @@
   .tone-bad  { background: var(--bad-bg);  color: var(--bad-fg);  border-color: var(--bad-line); }
   .tone-flat { background: var(--flat-bg); color: var(--flat-fg); border-color: var(--flat-line); }
 
+  /* ---------- stale-page banner ---------- */
+  /* Colours come from its tone class; this only lays it out. Border longhands,
+     so the tone's border-color is not reset. */
+  .stale {
+    padding: 9px 16px; font-size: 13.5px;
+    border-style: solid; border-width: 0 0 1px;
+  }
+  .stale b { font-weight: 600; }
+
   /* ---------- tabs ---------- */
   nav {
     display: flex; gap: 2px; padding: 0 10px;
@@ -288,6 +297,7 @@
   /* ---------- phone ---------- */
   @media (max-width: 760px) {
     main { padding: 12px 10px 40px; }
+    .stale { padding: 9px 12px; font-size: 13px; }
     header { position: static; padding: 10px 12px 8px; }
     .built { margin-left: 0; flex-basis: 100%; }
     .chips { gap: 5px; }
@@ -339,6 +349,10 @@
 </style>
 </head>
 <body>
+
+<!-- Shown by the page script when the build is older than THRESHOLDS.pageAge,
+     or when the page cannot tell how old it is. Outside every view on purpose. -->
+<div id="staleBanner" class="stale tone-bad" role="alert" hidden></div>
 
 <header>
   <div class="hd-row">
@@ -454,6 +468,42 @@
 
   var ALL_ROOMS = DATA.rooms;
   var NEEDS_ATTENTION = function (r) { return r.status === 'Issue' || r.status === 'Check'; };
+
+  // ------------------------------------------------------- stale-page banner
+  /* From Sep 16 to 24 the daily build failed and this page went on serving the
+     Sep 15 build with nothing on screen to say so. So the page judges its own
+     age against the viewer's clock - on load, and hourly while it stays open -
+     and says so once the build is older than THRESHOLDS.pageAge, which arrives
+     in the payload; no cutoff is typed here. A builtAt it cannot read means it
+     cannot vouch for itself: banner. One in the future means the viewer's clock
+     is behind: no banner. It runs first, so nothing below that throws can stop
+     it. The time shown is the existing full date-time format: builtAt is an
+     instant, not a date-only string, so fmtDay does not apply. */
+  var PAGE_AGE_RECHECK_MS = 60 * 60 * 1000;
+  var staleShown = null;
+  function checkPageAge() {
+    var pa = TH && TH.pageAge;
+    var built = typeof DATA.builtAt === 'string' ? Date.parse(DATA.builtAt) : NaN;
+    var msg = '';
+    if (isNaN(built) || !pa || typeof pa.maxDays !== 'number' || !(pa.maxDays > 0)) {
+      msg = '<b>This page can&rsquo;t tell when it was last refreshed.</b> The figures may be out of date.';
+    } else {
+      var age = Date.now() - built;
+      if (age > pa.maxDays * DAY) {
+        var n = Math.floor(age / DAY);
+        msg = '<b>This page hasn&rsquo;t refreshed since ' + esc(fmtDateTime(DATA.builtAt))
+          + ' (' + n + (n === 1 ? ' day' : ' days') + ' ago).</b> The figures may be out of date.'
+          + (pa.confirmed ? '' : ' (' + esc(pa.maxDays) + '-day cutoff unconfirmed)');
+      }
+    }
+    if (msg === staleShown) return; // unchanged: leave it, so it is not announced again
+    staleShown = msg;
+    var el = document.getElementById('staleBanner');
+    el.innerHTML = msg;
+    el.hidden = !msg;
+  }
+  checkPageAge();
+  setInterval(checkPageAge, PAGE_AGE_RECHECK_MS);
 
   // ---------------------------------------------------------------- helpers
   function esc(s) {

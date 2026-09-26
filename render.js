@@ -172,6 +172,12 @@ function sanityProblems(data) {
       problems.push(`${p.code}: snapshot carries no currentTime key`);
     }
   }
+  // The stale-page banner's cutoff reaches the page only through the payload.
+  // Without one the page cannot judge its own age, and would say so on every load.
+  const pageAge = data.thresholds && data.thresholds.pageAge;
+  if (!pageAge || !Number.isFinite(pageAge.maxDays) || pageAge.maxDays <= 0) {
+    problems.push(`thresholds.pageAge.maxDays must be a positive number of days, got ${JSON.stringify(pageAge && pageAge.maxDays)}`);
+  }
 
   for (const p of data.properties) {
     const c = p.counts;

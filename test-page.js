@@ -325,9 +325,22 @@ const PAGE_SCRIPT = (() => {
   return m[1];
 })();
 
-function runPage(payload, search = '') {
+function runPage(payload, search = '', opts = {}) {
   const els = new Map();
   const blobs = [];
+  // The viewer's clock. With opts.now, Date.now() and a bare new Date() read
+  // it; every other use of Date is the real one. Without it the page runs on
+  // the real clock, as it always has. Interval timers never fire on their own:
+  // advance() moves the clock and fires each one as often as its period says.
+  const clock = { now: opts.now };
+  const timers = [];
+  class ClockDate extends Date {
+    constructor(...a) {
+      if (a.length) super(...a);
+      else super(clock.now);
+    }
+    static now() { return clock.now; }
+  }
   const mk = (id, tag) => {
     const e = {
       id, tagName: tag || 'div', innerHTML: '', textContent: '', value: '', hidden: false, children: [],
@@ -367,13 +380,27 @@ function runPage(payload, search = '') {
     URLSearchParams,
     Blob: FakeBlob,
     URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
+    setInterval: (fn, ms) => timers.push({ fn, ms, next: clock.now + ms }),
     console,
   };
+  if (opts.now !== undefined) ctx.Date = ClockDate;
   vm.runInNewContext(PAGE_SCRIPT, ctx, { filename: 'template.html' });
   return {
     html: (id) => byId(id).innerHTML,
     text: (id) => byId(id).textContent,
     el: byId,
+    intervals: () => timers.map((x) => x.ms),
+    advance(ms) {
+      const end = clock.now + ms;
+      for (;;) {
+        const due = timers.filter((x) => x.next <= end).sort((a, b) => a.next - b.next)[0];
+        if (!due) break;
+        clock.now = due.next;
+        due.next += due.ms;
+        due.fn();
+      }
+      clock.now = end;
+    },
     csv() {
       byId('fCsv').click();
       return blobs[blobs.length - 1].replace(/^﻿/, '');
@@ -753,6 +780,112 @@ t('an annotation on a day with no record is not drawn (the record carries the st
   const page = pageWith([rec(-12, 50), rec(-11, 50), rec(0, 50)], [{ date: addDays(END, -5), label: 'nothing here', charts: 'all' }]);
   assert.ok(svgsOf(page.html('fleetStrip')).every((s) => marksOf(s).length === 0));
   assert.ok(!/nothing here/.test(page.html('fleetStrip') + page.html('cards')));
+});
+
+// ===========================================================================
+console.log('\nPAGE: the stale-page banner (THRESHOLDS.pageAge)');
+
+// The page judges its own age against the viewer's clock. Every case runs the
+// page on a fixed clock set relative to the fixture's build time. The banner's
+// date is local wall clock, so it is compared with the same formatting in this
+// zone and never kept for the cross-zone digest; the day count is.
+const MIN = 60000;
+const HOUR = 60 * MIN;
+const DAYMS = 24 * HOUR;
+const AT = Date.parse(BUILT);
+const fmtFull = (iso) => new Date(iso).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+const bannerOf = (page) => {
+  const b = page.el('staleBanner');
+  return b.hidden ? null : unesc(b.innerHTML.replace(/<[^>]*>/g, ''));
+};
+const STALE = (n) => 'This page hasn’t refreshed since ' + fmtFull(BUILT) + ' (' + n + ' days ago). The figures may be out of date.';
+const BLIND = 'This page can’t tell when it was last refreshed. The figures may be out of date.';
+const daysIn = (text) => keep(Number((String(text).match(/\((\d+) days? ago\)/) || [])[1]));
+const withPageAge = (pageAge) => {
+  const p = payloadOf(fixture());
+  // A copy: the fixture's thresholds object is config.js's own.
+  p.thresholds = { ...p.thresholds, pageAge };
+  return p;
+};
+
+t('the cutoff lives in config, confirmed, and reaches the page in the payload', () => {
+  assert.deepStrictEqual(keep(THRESHOLDS.pageAge), { confirmed: true, maxDays: 7 });
+  assert.deepStrictEqual(payloadOf(fixture()).thresholds.pageAge, { confirmed: true, maxDays: 7 });
+});
+t('normalized data without a usable cutoff fails the sanity check', () => {
+  for (const bad of [undefined, { confirmed: true }, { confirmed: true, maxDays: 0 }, { confirmed: true, maxDays: '7' },
+    { confirmed: true, maxDays: Infinity }]) {
+    const d = fixture();
+    d.thresholds = { ...THRESHOLDS, pageAge: bad };
+    if (bad === undefined) delete d.thresholds.pageAge;
+    const problems = R.sanityProblems(d);
+    assert.strictEqual(problems.length, 1, JSON.stringify(bad) + ' -> ' + JSON.stringify(problems));
+    assert.ok(/pageAge/.test(problems[0]), problems[0]);
+  }
+});
+t('the banner sits above the header, outside every view, and starts hidden', () => {
+  const html = fs.readFileSync(path.join(__dirname, 'template.html'), 'utf8');
+  const tag = (html.match(/<div id="staleBanner"[^>]*>/) || [])[0];
+  assert.ok(tag, 'no #staleBanner element');
+  assert.ok(/\shidden[\s>]/.test(tag), tag);
+  const at = html.indexOf(tag);
+  assert.ok(at > html.indexOf('<body>') && at < html.indexOf('<header>'), 'the banner must come before the header');
+});
+t('6 d 23 h old, and exactly 7 d old: no banner', () => {
+  assert.strictEqual(keep(bannerOf(runPage(payloadOf(fixture()), '', { now: AT + 6 * DAYMS + 23 * HOUR }))), null);
+  assert.strictEqual(keep(bannerOf(runPage(payloadOf(fixture()), '', { now: AT + 7 * DAYMS }))), null);
+});
+t('7 d + 1 min old: the banner, with the build time in local terms and the whole days since', () => {
+  const a = bannerOf(runPage(payloadOf(fixture()), '', { now: AT + 7 * DAYMS + MIN }));
+  assert.strictEqual(a, STALE(7));
+  assert.strictEqual(daysIn(a), 7);
+  const b = bannerOf(runPage(payloadOf(fixture()), '', { now: AT + 9 * DAYMS + 23 * HOUR }));
+  assert.strictEqual(b, STALE(9));
+  assert.strictEqual(daysIn(b), 9);
+});
+t('a missing or unreadable builtAt: the banner, since the page cannot vouch for itself', () => {
+  for (const v of [undefined, null, '', 'garbage', '2026-13-45T99:00:00Z', AT]) {
+    const p = payloadOf(fixture());
+    if (v === undefined) delete p.builtAt;
+    else p.builtAt = v;
+    assert.strictEqual(bannerOf(runPage(p, '', { now: AT + HOUR })), BLIND, JSON.stringify(v));
+  }
+  // The build refuses to ship without a cutoff; a page that has none anyway says the same.
+  const p = payloadOf(fixture());
+  p.thresholds = { ...p.thresholds };
+  delete p.thresholds.pageAge;
+  assert.strictEqual(bannerOf(runPage(p, '', { now: AT + HOUR })), BLIND);
+  keep('blind');
+});
+t('a builtAt in the future (the viewer’s clock is behind): no banner', () => {
+  for (const behind of [MIN, 3 * DAYMS, 400 * DAYMS]) {
+    assert.strictEqual(keep(bannerOf(runPage(payloadOf(fixture()), '', { now: AT - behind }))), null, String(behind));
+  }
+});
+t('left open, the page re-checks hourly: crossing the cutoff turns the banner on without a reload', () => {
+  const page = runPage(payloadOf(fixture()), '', { now: AT + 6 * DAYMS + 23 * HOUR + 30 * MIN });
+  assert.strictEqual(bannerOf(page), null);
+  assert.deepStrictEqual(keep(page.intervals()), [HOUR]);
+  page.advance(59 * MIN);
+  assert.strictEqual(bannerOf(page), null, 'no check has run yet');
+  page.advance(MIN);
+  assert.strictEqual(bannerOf(page), STALE(7));
+  page.advance(DAYMS);
+  assert.strictEqual(daysIn(bannerOf(page)), 8);
+});
+t('the banner stands on every view', () => {
+  for (const v of ['', '?v=rooms', '?v=recon', '?v=triage']) {
+    const page = runPage(payloadOf(fixture()), v, { now: AT + 8 * DAYMS });
+    assert.strictEqual(bannerOf(page), STALE(8), v);
+  }
+});
+t('the cutoff is read from the payload, never typed into the page', () => {
+  assert.strictEqual(daysIn(bannerOf(runPage(withPageAge({ confirmed: true, maxDays: 3 }), '', { now: AT + 3 * DAYMS + MIN }))), 3);
+  assert.strictEqual(keep(bannerOf(runPage(withPageAge({ confirmed: true, maxDays: 30 }), '', { now: AT + 29 * DAYMS }))), null);
+});
+t('an unconfirmed cutoff says so on the banner', () => {
+  const text = bannerOf(runPage(withPageAge({ confirmed: false, maxDays: 7 }), '', { now: AT + 8 * DAYMS }));
+  assert.strictEqual(text, STALE(8) + ' (7-day cutoff unconfirmed)');
 });
 
 // ===========================================================================
