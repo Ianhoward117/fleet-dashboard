@@ -457,18 +457,23 @@ const sheetRowOf = (r, fallback) => (Number.isInteger(r.__rowNum__) ? r.__rowNum
 /** A header matched by pattern, never by exact string: several carry a date suffix or a trailing space. */
 const headerKey = (headers, re) => headers.find((h) => re.test(String(h).trim())) || null;
 
+/** The 0-based column whose header cell reads exactly `header`, or -1. */
+function headerColumn(ws, headerRow, header) {
+  if (!ws || !ws['!ref'] || !header) return -1;
+  const range = XLSX.utils.decode_range(ws['!ref']);
+  for (let c = range.s.c; c <= range.e.c; c++) {
+    const cell = ws[XLSX.utils.encode_cell({ r: headerRow, c })];
+    if (cell && String(cell.v) === header) return c;
+  }
+  return -1;
+}
+
 /**
  * sheet_to_json turns an error cell (#REF!, #VALUE!) into null, so a broken
  * lookup would read as a blank. Put the error text back in one column.
  */
 function restoreErrorCells(ws, rows, headerRow, header) {
-  if (!ws || !ws['!ref'] || !header) return;
-  const range = XLSX.utils.decode_range(ws['!ref']);
-  let col = -1;
-  for (let c = range.s.c; c <= range.e.c && col < 0; c++) {
-    const cell = ws[XLSX.utils.encode_cell({ r: headerRow, c })];
-    if (cell && String(cell.v) === header) col = c;
-  }
+  const col = headerColumn(ws, headerRow, header);
   if (col < 0) return;
   for (const r of rows) {
     if (!Number.isInteger(r.__rowNum__)) continue;
@@ -478,8 +483,30 @@ function restoreErrorCells(ws, rows, headerRow, header) {
 }
 
 /**
+ * What each row's DeviceId cell is, by sheet row index: 'formula' (the
+ * sheet's two-key lookup of heartbeatstatus, which follows every re-export),
+ * 'typed' (a value typed over it, which never does), or 'empty' (no formula
+ * and nothing in it). The workbook is read with SheetJS's default
+ * cellFormula, which keeps each formula on its cell. Nothing is inferred
+ * from the formula's text: a formula is a formula.
+ */
+function deviceIdCellKinds(ws, rows, headerRow, header) {
+  const kinds = new Map();
+  const col = headerColumn(ws, headerRow, header);
+  if (col < 0) return kinds;
+  for (const r of rows) {
+    if (!Number.isInteger(r.__rowNum__)) continue;
+    const cell = ws[XLSX.utils.encode_cell({ r: r.__rowNum__, c: col })];
+    const typed = cell && cell.v !== null && cell.v !== undefined && String(cell.v).trim() !== '';
+    kinds.set(r.__rowNum__, cell && cell.f ? 'formula' : typed ? 'typed' : 'empty');
+  }
+  return kinds;
+}
+
+/**
  * One tab: its header row checked (fatal when a required header is missing),
- * then its data rows. For roomstatus, DeviceId keeps any error text.
+ * then its data rows. For roomstatus, DeviceId keeps any error text, and
+ * deviceIdCells says which of its cells are formulas.
  */
 function readSheetTab(ws, name, headerRow) {
   const headers = (XLSX.utils.sheet_to_json(ws, { header: 1, range: headerRow, defval: null, raw: true })[0] || [])
@@ -487,8 +514,9 @@ function readSheetTab(ws, name, headerRow) {
     .map(String);
   const K = requireHeaders(name, headers);
   const rows = XLSX.utils.sheet_to_json(ws, { range: headerRow, defval: null, raw: true });
-  if (name === 'roomstatus') restoreErrorCells(ws, rows, headerRow, K.deviceId);
-  return { K, rows };
+  if (name !== 'roomstatus') return { K, rows };
+  restoreErrorCells(ws, rows, headerRow, K.deviceId);
+  return { K, rows, deviceIdCells: deviceIdCellKinds(ws, rows, headerRow, K.deviceId) };
 }
 
 /**
@@ -536,8 +564,12 @@ function requireHeaders(tab, headers) {
   return K;
 }
 
-/** roomstatus data rows -> records. Row 1 is a banner and row 2 the header, so data starts on row 3. */
-function parseRoomstatusRows(rawRows, K) {
+/**
+ * roomstatus data rows -> records. Row 1 is a banner and row 2 the header, so
+ * data starts on row 3. cellKinds is readSheetTab's deviceIdCells; without it
+ * each row's deviceIdCell is null (unknown), never guessed.
+ */
+function parseRoomstatusRows(rawRows, K, cellKinds = null) {
   const rows = [];
   let blank = 0;
   rawRows.forEach((r, i) => {
@@ -554,6 +586,7 @@ function parseRoomstatusRows(rawRows, K) {
       deviceId: cell.id,
       deviceIdRaw: cell.raw,
       deviceIdProblem: cell.problem,
+      deviceIdCell: (cellKinds && Number.isInteger(r.__rowNum__) && cellKinds.get(r.__rowNum__)) || null,
       status: normStr(r[K.status]),
       actionItem: normStr(r[K.action]),
       notes: normStr(r[K.notes]),
@@ -716,12 +749,28 @@ function heartbeatIndex(hbRows, codes) {
  */
 const NO_DEVICE_BUCKET = THRESHOLDS.heartbeatAge.noDeviceBucket.key;
 
+/**
+ * One Particle device's heartbeat as of builtAt: when it was last heard, how
+ * many days ago, and its bucket. No device, or a last_heard that cannot be
+ * read, is never heard. A room and a note-named unit are bucketed by this one
+ * function, so the two can never disagree about the same device.
+ */
+function deviceHeartbeat(device, builtAt) {
+  const heard = device && device.last_heard ? new Date(device.last_heard) : null;
+  const reporting = Boolean(heard && !isNaN(heard));
+  const daysSilent = reporting ? (builtAt - heard) / DAY_MS : null;
+  return {
+    reporting,
+    lastHeartbeat: reporting ? heard : null,
+    daysSilent,
+    bucket: bucketByDays(daysSilent, THRESHOLDS.heartbeatAge),
+  };
+}
+
 function roomHeartbeat(row, devicesById, builtAt) {
   const deviceId = row.deviceId || null;
   const api = deviceId ? devicesById.get(deviceId) || null : null;
-  const heard = api && api.last_heard ? new Date(api.last_heard) : null;
-  const reporting = Boolean(heard && !isNaN(heard));
-  const daysSilent = reporting ? (builtAt - heard) / DAY_MS : null;
+  const hb = deviceHeartbeat(api, builtAt);
   const noDevice = !deviceId && !row.deviceIdProblem;
   return {
     deviceId,
@@ -729,10 +778,10 @@ function roomHeartbeat(row, devicesById, builtAt) {
     // never read, and no name is ever resolved into an assignment.
     deviceName: api && api.name ? String(api.name) : null,
     known: Boolean(api),
-    reporting,
-    lastHeartbeat: reporting ? heard : null,
-    daysSilent,
-    bucket: noDevice ? NO_DEVICE_BUCKET : bucketByDays(daysSilent, THRESHOLDS.heartbeatAge),
+    reporting: hb.reporting,
+    lastHeartbeat: hb.lastHeartbeat,
+    daysSilent: hb.daysSilent,
+    bucket: noDevice ? NO_DEVICE_BUCKET : hb.bucket,
   };
 }
 
@@ -875,8 +924,30 @@ function resolveNamedUnit(name, devicesByName) {
   return { device: null, problem: hits.length ? 'ambiguous name' : 'no exact Particle name', matches: hits.length };
 }
 
-/** F4: a note names a replacement that the DeviceId column does not show. */
-function findNoteReplacementConflicts(rows, devicesByName) {
+/**
+ * The unit a note names, as Particle's list has it: its id, its name as
+ * Particle writes it, and whether it is reporting - the bucket and age a room
+ * holding it would show (deviceHeartbeat). All null when the name resolves to
+ * no device or to several: there is no one unit to describe.
+ */
+function namedUnitOf(device, builtAt) {
+  if (!device) return { namedDeviceId: null, namedDeviceName: null, namedHeartbeatBucket: null, namedDaysSilent: null };
+  const hb = deviceHeartbeat(device, builtAt);
+  return {
+    namedDeviceId: device.id,
+    namedDeviceName: device.name ? String(device.name) : null,
+    namedHeartbeatBucket: hb.bucket,
+    namedDaysSilent: round(hb.daysSilent, 1),
+  };
+}
+
+/**
+ * F4: a note names a replacement that the DeviceId column does not show.
+ * Each finding carries the named unit (namedUnitOf, measured against builtAt,
+ * as rooms are) and the room's DeviceId cell kind, for the backfill list: a
+ * typed cell is corrected in the sheet, a formula in what it looks up.
+ */
+function findNoteReplacementConflicts(rows, devicesByName, builtAt) {
   const findings = [];
   const unnamed = [];
   let recognised = 0;
@@ -885,13 +956,16 @@ function findNoteReplacementConflicts(rows, devicesByName) {
     if (!p) continue;
     recognised++;
     const base = { flag: 'F4', property: r.property, room: roomOf(r), sheetRow: r.sheetRow, note: r.notes };
+    const cell = { deviceIdCell: r.deviceIdCell || null };
     if (p.kind === 'unnamed') {
-      unnamed.push({ ...base, kind: p.kind, deviceId: r.deviceId || null });
+      unnamed.push({ ...base, kind: p.kind, deviceId: r.deviceId || null, ...cell });
       continue;
     }
     const res = resolveNamedUnit(p.name, devicesByName);
     if (!res.device) {
-      findings.push({ ...base, kind: p.kind, namedUnit: p.name, reason: res.problem, deviceId: r.deviceId || null });
+      findings.push({
+        ...base, kind: p.kind, namedUnit: p.name, ...namedUnitOf(null), reason: res.problem, deviceId: r.deviceId || null, ...cell,
+      });
       continue;
     }
     if (r.deviceId && r.deviceId === String(res.device.id).toLowerCase()) continue; // the sheet agrees
@@ -899,9 +973,10 @@ function findNoteReplacementConflicts(rows, devicesByName) {
       ...base,
       kind: p.kind,
       namedUnit: p.name,
-      namedDeviceId: res.device.id,
+      ...namedUnitOf(res.device, builtAt),
       reason: r.deviceId ? 'DeviceId shows another unit' : r.deviceIdProblem ? 'DeviceId is not a device id' : 'DeviceId is blank',
       deviceId: r.deviceId || null,
+      ...cell,
     });
   }
   return { findings, unnamed, recognised };
@@ -1158,7 +1233,7 @@ function readConsolidated() {
   const bs = readSheetTab(wb.Sheets.batterystatus, 'batterystatus', 0);
   const hs = readSheetTab(wb.Sheets.heartbeatstatus, 'heartbeatstatus', 0);
   return {
-    rooms: parseRoomstatusRows(rs.rows, rs.K),
+    rooms: parseRoomstatusRows(rs.rows, rs.K, rs.deviceIdCells),
     battery: parseBatteryRows(bs.rows, bs.K),
     heartbeat: parseHeartbeatRows(hs.rows, hs.K),
   };
@@ -1355,7 +1430,7 @@ function normalize() {
   // -------------------------------------------------------------------------
   const allRows = PROPERTIES.flatMap((p) => part.byProperty.get(p.code));
   const f2 = findLocationTagConflicts(allRows, particle.byId, liveCodes);
-  const f4 = findNoteReplacementConflicts(allRows, particle.byName);
+  const f4 = findNoteReplacementConflicts(allRows, particle.byName, builtAt);
   // Page findings (PAGE_FINDING_KEYS): F1-F4 with their rooms, and where F2
   // could not look. Each also lands on its room row as a flag.
   const findings = {
@@ -1565,9 +1640,15 @@ function report(data) {
   console.log(`    by reason: ${JSON.stringify(f4ByReason)}`);
   for (const x of f.f4) {
     const shows = x.deviceId ? (nameOfId(x.deviceId) || '...' + String(x.deviceId).slice(-6)) : 'blank';
-    console.log(`    ${pad(where(x), 11)}${pad(x.namedUnit, 9)}DeviceId ${pad(shows, 10)}${x.reason}`);
+    const heard = !x.namedDeviceId ? '-' : x.namedDaysSilent === null ? 'never' : x.namedDaysSilent + 'd';
+    console.log(
+      `    ${pad(where(x), 11)}${pad(x.namedUnit, 9)}DeviceId ${pad(shows, 10)}${pad(x.reason, 29)}` +
+        `named unit heard ${pad(heard, 7)}cell ${x.deviceIdCell || '?'}`
+    );
   }
-  for (const x of f.f4Unnamed) console.log(`    unnamed: ${where(x)}  ${JSON.stringify(x.note)}`);
+  for (const x of f.f4Unnamed) console.log(`    unnamed: ${where(x)}  ${JSON.stringify(x.note)}  cell ${x.deviceIdCell || '?'}`);
+  const cells = [...f.f4, ...f.f4Unnamed].reduce((m, x) => ((m[x.deviceIdCell || '?'] = (m[x.deviceIdCell || '?'] || 0) + 1), m), {});
+  console.log(`    DeviceId cells: ${JSON.stringify(cells)}  (typed and empty cells freeze: fix them in the sheet)`);
 
   // Everything below is log-only: data/normalized.json and this report, never the page (D7).
   const lf = data.logFindings;

@@ -530,6 +530,112 @@ t('F4 classifies: agrees / shows another unit / blank / unresolvable; unnamed ap
   assert.strictEqual(r.findings[0].namedDeviceId, hex(2));
 });
 
+// Block 4: the backfill list says whether the unit a note names is reporting.
+// Particle's list is already fetched; the named unit is looked up in it and
+// in nothing else.
+const namedOf = (f) => [f.room, f.namedDeviceId, f.namedDeviceName, f.namedHeartbeatBucket, f.namedDaysSilent];
+t('F4 carries the named unit as Particle has it: id, name, heartbeat bucket and age', () => {
+  const { byName } = indexDevices([
+    dev(1, 'P2-0001', [], ago(0.1)), dev(2, 'P2-0002', [], ago(0.43)), dev(3, 'P2-0003', [], ago(3)),
+    dev(4, 'P2-0004', [], ago(34.26)), dev(5, 'P2-0005', [], null),
+  ]);
+  const rows = [
+    row('6178', 101, hex(1), { notes: 'Replaced with p2-0002 on 09/23/26.' }), // live; the note's own spelling
+    row('6178', 102, hex(1), { notes: 'P2-0003 installed on 9/16/26.' }), // aging
+    row('6178', 103, null, { notes: 'Replaced with P2-0004 on 09/23/26.' }), // silent a month
+    row('6178', 104, hex(1), { notes: 'The correct device for this room is P2-0005.' }), // never heard
+  ];
+  const r = N.findNoteReplacementConflicts(rows, byName, BUILT);
+  assert.deepStrictEqual(keep(r.findings.map(namedOf)), [
+    ['101', hex(2), 'P2-0002', 'fresh', 0.4],
+    ['102', hex(3), 'P2-0003', 'aging', 3],
+    ['103', hex(4), 'P2-0004', 'stale', 34.3],
+    ['104', hex(5), 'P2-0005', 'never', null],
+  ]);
+  assert.strictEqual(r.findings[0].namedUnit, 'p2-0002', 'the note is quoted as written; the name is Particle’s');
+});
+t('the named unit buckets exactly as a room holding it would, cutoffs included', () => {
+  const ages = [1.99, 2, 6.99, 7, 7.01, 200];
+  const devices = ages.map((a, i) => dev(10 + i, 'P2-001' + i, [], ago(a)));
+  const { byId, byName } = indexDevices(devices);
+  const rows = devices.map((d, i) => row('6178', 200 + i, null, { notes: 'Replaced with ' + d.name + ' on 09/23/26.' }));
+  const named = N.findNoteReplacementConflicts(rows, byName, BUILT).findings.map((f) => f.namedHeartbeatBucket);
+  const asRoom = devices.map((d) => N.roomHeartbeat(row('6178', 1, d.id), byId, BUILT).bucket);
+  assert.deepStrictEqual(keep(named), asRoom);
+  assert.deepStrictEqual(named, ['fresh', 'aging', 'aging', 'stale', 'stale', 'stale']);
+});
+t('a name that resolves to no device, or to several, carries no named unit: every field null', () => {
+  const { byName } = indexDevices([dev(3, 'P-0823', [], ago(0.2)), dev(6, 'P2-0100', [], ago(0.2)), dev(7, 'p2-0100', [], ago(0.2))]);
+  const rows = [
+    row('6178', 418, hex(3), { notes: 'Flashing red LED - replaced with P2-0823 on 9/16.' }),
+    row('6178', 419, hex(3), { notes: 'Replaced with P2-0100 on 09/23/26.' }),
+  ];
+  const r = N.findNoteReplacementConflicts(rows, byName, BUILT);
+  assert.deepStrictEqual(keep(r.findings.map((f) => [f.reason, ...namedOf(f)])), [
+    ['no exact Particle name', '418', null, null, null, null],
+    ['ambiguous name', '419', null, null, null, null],
+  ]);
+});
+t('an unnamed note names no unit, so it carries no named-unit fields', () => {
+  const { byName } = indexDevices([dev(1, 'P2-0001', [], ago(0.1))]);
+  const r = N.findNoteReplacementConflicts([row('6178', 302, hex(1), { notes: 'Replaced device on 9/23/26.' })], byName, BUILT);
+  assert.strictEqual(r.findings.length, 0);
+  assert.deepStrictEqual(keep(Object.keys(r.unnamed[0]).sort()),
+    ['deviceId', 'deviceIdCell', 'flag', 'kind', 'note', 'property', 'room', 'sheetRow']);
+});
+
+// The optional "cell" column: typed cells freeze and are fixed in the sheet;
+// lookups follow the next export and are fixed in what they look up.
+t('DeviceId cell kind: a formula, a value typed over it, or nothing at all', () => {
+  const hdrs = ['Location', 'Rooms', 'DeviceId', 'Status', 'Action Item', 'Notes', 'Battery Status [x]', 'Calibration Risk'];
+  const ws = { '!ref': 'A1:H7', A1: { t: 's', v: '#Rooms to repair' } };
+  hdrs.forEach((h, i) => { ws[String.fromCharCode(65 + i) + '2'] = { t: 's', v: h }; });
+  const put = (r, room, cell) => {
+    ws['A' + r] = { t: 'n', v: 6178 };
+    ws['B' + r] = { t: 'n', v: room };
+    ws['D' + r] = { t: 's', v: 'Ok' };
+    if (cell) ws['C' + r] = cell;
+  };
+  const LOOKUP = 'IFNA(INDEX(heartbeatstatus!A:A,MATCH(1,(heartbeatstatus!F:F=A3)*(heartbeatstatus!B:B=B3),0)),"")';
+  put(3, 101, { t: 's', v: hex(1), f: LOOKUP, F: 'C3:C3' }); // the lookup, with a device
+  put(4, 102, { t: 's', v: hex(2) }); // an id typed over it
+  put(5, 103, null); // no cell at all
+  put(6, 104, { t: 's', v: '', f: LOOKUP, F: 'C6:C6' }); // the lookup, finding nothing
+  put(7, 105, { t: 'e', v: 0x17, w: '#REF!', f: LOOKUP }); // the lookup, broken
+  const tab = N.readSheetTab(ws, 'roomstatus', 1);
+  const { rows } = N.parseRoomstatusRows(tab.rows, tab.K, tab.deviceIdCells);
+  assert.deepStrictEqual(keep(rows.map((r) => [r.room.display, r.deviceIdCell, r.deviceIdProblem])), [
+    ['101', 'formula', null], ['102', 'typed', null], ['103', 'empty', null], ['104', 'formula', null], ['105', 'formula', 'sheet error'],
+  ]);
+  // Without the cell map (a caller that only has values) the kind is unknown, not guessed.
+  assert.deepStrictEqual(N.parseRoomstatusRows(tab.rows, tab.K).rows.map((r) => r.deviceIdCell), [null, null, null, null, null]);
+});
+t('the workbook read keeps formulas: a written .xlsx read back the way normalize reads it', () => {
+  const XLSX = require('xlsx');
+  const ws = XLSX.utils.aoa_to_sheet([['DeviceId'], ['typed']]);
+  ws.A3 = { t: 's', v: hex(1), f: 'IFNA(INDEX(Sheet2!A:A,1),"")' };
+  ws['!ref'] = 'A1:A3';
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'roomstatus');
+  const back = XLSX.read(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }), { cellDates: false }).Sheets.roomstatus;
+  assert.strictEqual(back.A2.f, undefined);
+  assert.strictEqual(keep(back.A3.f), 'IFNA(INDEX(Sheet2!A:A,1),"")');
+});
+t('F4 findings carry the room’s DeviceId cell kind, unnamed ones too', () => {
+  const { byName } = indexDevices([dev(1, 'P2-0001', [], ago(0.1)), dev(2, 'P2-0002', [], ago(0.1))]);
+  const rows = [
+    row('6178', 101, hex(1), { deviceIdCell: 'formula', notes: 'Replaced with P2-0002 on 09/23/26.' }),
+    row('6178', 102, hex(1), { deviceIdCell: 'typed', notes: 'Replaced with P2-0823 on 09/23/26.' }),
+    row('6178', 103, null, { deviceIdCell: 'empty', notes: 'P2-0002 installed on 9/16/26.' }),
+    row('6178', 302, hex(1), { deviceIdCell: 'formula', notes: 'Replaced device on 9/23/26.' }),
+    row('6178', 303, hex(1), { notes: 'Replaced with P2-0002 on 09/23/26.' }), // kind never read
+  ];
+  const r = N.findNoteReplacementConflicts(rows, byName, BUILT);
+  assert.deepStrictEqual(keep(r.findings.map((f) => [f.room, f.deviceIdCell])),
+    [['101', 'formula'], ['102', 'typed'], ['103', 'empty'], ['303', null]]);
+  assert.deepStrictEqual(r.unnamed.map((f) => [f.room, f.deviceIdCell]), [['302', 'formula']]);
+});
+
 // ===========================================================================
 console.log('\nPER-ROOM FLAGS AND THE FINDINGS SPLIT (Block 3)');
 
@@ -911,6 +1017,11 @@ t('garbage in, findings (or nothing) out', () => {
   assert.doesNotThrow(() => N.findDeviceIdProblems(junk, null));
   assert.doesNotThrow(() => N.findNoteReplacementConflicts(junk, empty));
   assert.doesNotThrow(() => N.findNoteReplacementConflicts(junk, null));
+  assert.doesNotThrow(() => N.findNoteReplacementConflicts(junk, empty, BUILT));
+  // A named unit whose last_heard cannot be read has not been heard: never, with no age.
+  const garbled = indexDevices([{ id: hex(9), name: 'P2-0009', groups: [], last_heard: 'yesterday-ish' }]).byName;
+  const g = N.findNoteReplacementConflicts([row('6178', 1, null, { notes: 'Replaced with P2-0009 on 09/23/26.' })], garbled, BUILT);
+  assert.deepStrictEqual(keep(namedOf(g.findings[0])), ['1', hex(9), 'P2-0009', 'never', null]);
   assert.doesNotThrow(() => N.resolveNamedUnit(undefined, null));
   assert.doesNotThrow(() => N.attributeDevice(null, null, LIVE));
   assert.doesNotThrow(() => N.findLiveButUnmapped([null, {}, dev(1, 'x', null)], new Set(), new Map(), PROPS, BUILT, 7));
