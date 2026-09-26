@@ -141,10 +141,14 @@ async function verifyLive() {
   const deadline = Date.now() + MAX_WAIT_MS;
   let last = null;
   let lastError = null;
+  // What was wrong with the most recent page that was recent but failed the
+  // checks, when no VERIFY_NEWER_THAN could prove it was the awaited build.
+  let lastWrong = null;
 
   for (;;) {
     try {
       last = await probe();
+      lastWrong = null;
       const mins = last.ageMs === null ? null : Math.round(last.ageMs / 60000);
 
       const fresh = NEWER_THAN
@@ -153,25 +157,34 @@ async function verifyLive() {
 
       if (fresh) {
         const { problems, notes } = pageProblems(last.html, last.data);
-        for (const n of notes) console.log(`VERIFY  note: ${n}`);
         if (problems.length) {
-          throw new Error(
+          const wrong =
             `the published page is reachable but wrong:\n` +
-              problems.map((p) => `  - ${p}`).join('\n')
-          );
-        }
-        console.log(
+            problems.map((p) => `  - ${p}`).join('\n');
+          // A strictly newer builtAt proves this is the build being waited
+          // for, so what is wrong with it is final. Without VERIFY_NEWER_THAN,
+          // "fresh" only means recent: right after a push the previous build
+          // can still be the one served, so keep polling and report this only
+          // if it is still true at the deadline.
+          if (NEWER_THAN) throw new Error(wrong);
+          lastWrong = wrong;
+          console.log(`VERIFY  the page served now fails the checks; it may be the previous build, waiting...`);
+        } else {
+          for (const n of notes) console.log(`VERIFY  note: ${n}`);
+          console.log(
           `VERIFY  ok - published ${mins} min ago, ` +
             `${last.data.properties.length} properties, ${last.rooms} rooms` +
             (NEWER_THAN ? ' (newer than the build this run started from)' : '')
+          );
+          return true;
+        }
+      } else {
+        console.log(
+          NEWER_THAN
+            ? `VERIFY  still serving the previous build (${last.builtAt ? last.builtAt.toISOString() : 'unknown'}), waiting...`
+            : `VERIFY  page is ${mins} min old, waiting for the new build...`
         );
-        return true;
       }
-      console.log(
-        NEWER_THAN
-          ? `VERIFY  still serving the previous build (${last.builtAt ? last.builtAt.toISOString() : 'unknown'}), waiting...`
-          : `VERIFY  page is ${mins} min old, waiting for the new build...`
-      );
     } catch (err) {
       // Network blips and mid-deploy 404s are expected while a build runs.
       lastError = err.message.split('\n')[0];
@@ -180,6 +193,14 @@ async function verifyLive() {
     }
 
     if (Date.now() >= deadline) {
+      // A recent page that never passed the checks: say what is wrong with it.
+      if (lastWrong) {
+        throw new Error(
+          `VERIFY FAILED: ${lastWrong}\n` +
+            `  (still true after ${fmtWait(MAX_WAIT_MS)}; pass VERIFY_NEWER_THAN=<the previous builtAt> ` +
+            `to tell a new build from the one it replaced)`
+        );
+      }
       // Two different failures land here, and they need different fixes.
       const reachedOurPage = last && last.ageMs !== null;
       const detail = reachedOurPage

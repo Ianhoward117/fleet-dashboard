@@ -108,7 +108,9 @@ This file is the working context: current state, decisions, and the traps.
   payload; `verify-live.js` checks the same on the live page.
 - **`verify-live.js` checks the page's shape only on the build it is waiting
   for.** While the previous build is still served it just waits, so a deploy
-  that changes the payload is not failed on the old page. Pass
+  that changes the payload is not failed on the old page. Without
+  `VERIFY_NEWER_THAN` it cannot tell a recent old page from the new one, so a
+  page failing the checks is polled until the deadline before it fails; pass
   `VERIFY_NEWER_THAN=<previous builtAt>` when checking a specific deploy.
 - **`data/` is gitignored except `data/room-overrides.json`** (`data/*` plus a
   negation — git will not descend into an ignored *directory*). The override is
@@ -243,7 +245,7 @@ These no longer run. Their code is still present until Block 5 deletes it
   written by the legacy build at 19:03Z; the first dispatched run after the
   merge rewrites the day's record with consolidated values (same-day
   overwrite) and the cutover `TRENDS` annotation is dated on that record.
-- **Tests:** `npm test` — 15 override + 78 cutover + 53 page, identical in
+- **Tests:** `npm test` — 15 override + 78 cutover + 57 page, identical in
   both zones.
 
 ## Open items

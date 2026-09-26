@@ -795,6 +795,64 @@ t('the older checks stand: every property, some rooms, noindex', () => {
   assert.strictEqual(V.pageProblems('<meta name="robots" content="all">', p).problems.length, 3);
 });
 
+/**
+ * verifyLive() against a fake site, in a child process: the module reads its
+ * tolerances from the environment when it loads, and fetch is stubbed there.
+ * `pages` is the sequence of payloads served, one per probe; the last repeats.
+ */
+function verifyAgainst(pages, env) {
+  const script = `
+    const pages = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+    let n = 0;
+    globalThis.fetch = async () => {
+      const p = pages[Math.min(n++, pages.length - 1)];
+      const html = '<meta name="robots" content="noindex, nofollow"><script type="application/json" id="payload">'
+        + JSON.stringify(p) + '</scr' + 'ipt>';
+      return { ok: true, status: 200, statusText: 'OK', text: async () => html };
+    };
+    require(${JSON.stringify(path.join(__dirname, 'verify-live.js'))}).verifyLive()
+      .then(() => console.log('RESULT ok after ' + n + ' probes'))
+      .catch((e) => console.log('RESULT fail after ' + n + ' probes: ' + e.message.split('\\n').slice(0, 3).join(' / ')));
+  `;
+  const r = spawnSync(process.execPath, ['-e', script], {
+    input: JSON.stringify(pages),
+    encoding: 'utf8',
+    env: { ...process.env, VERIFY_POLL_MS: '20', VERIFY_MAX_WAIT_MS: '400', VERIFY_NEWER_THAN: '', ...env },
+  });
+  return ((r.stdout || '').match(/^RESULT .*$/m) || [r.stdout + r.stderr])[0];
+}
+// A page as the legacy build published it: no stamps, no findings. Recent, so
+// "fresh" by age alone.
+const minutesAgo = (m) => new Date(Date.now() - m * 60000).toISOString();
+const oldShape = (builtAt) => {
+  const p = payloadOf(fixture());
+  delete p.sheetExportAsOf;
+  delete p.findings;
+  for (const x of p.properties) delete x.snapshot;
+  return { ...p, builtAt };
+};
+const newShape = (builtAt) => ({ ...payloadOf(fixture()), builtAt });
+
+t('right after a push, with no previous stamp, the old page is waited out, not failed', () => {
+  const r = verifyAgainst([oldShape(minutesAgo(30)), oldShape(minutesAgo(30)), newShape(minutesAgo(0))], {});
+  assert.ok(/^RESULT ok after 3 probes/.test(r), r);
+});
+t('with no previous stamp, a page that stays wrong still fails - at the deadline, naming what is wrong', () => {
+  const r = verifyAgainst([oldShape(minutesAgo(30))], {});
+  assert.ok(/^RESULT fail after \d+ probes: VERIFY FAILED: the published page is reachable but wrong/.test(r), r);
+  assert.ok(/sheetExportAsOf/.test(r), r);
+});
+t('with VERIFY_NEWER_THAN, the old page is waited out and the new one checked', () => {
+  const before = minutesAgo(30);
+  const r = verifyAgainst([oldShape(before), oldShape(before), newShape(minutesAgo(0))], { VERIFY_NEWER_THAN: before });
+  assert.ok(/^RESULT ok after 3 probes/.test(r), r);
+});
+t('with VERIFY_NEWER_THAN, a newer page that is wrong fails at once', () => {
+  const before = minutesAgo(30);
+  const r = verifyAgainst([oldShape(minutesAgo(0))], { VERIFY_NEWER_THAN: before });
+  assert.ok(/^RESULT fail after 1 probes: the published page is reachable but wrong/.test(r), r);
+});
+
 // ---------------------------------------------------------------------------
 console.log('\n' + (fail ? 'FAILED ' : 'ALL PASS ') + pass + ' passed, ' + fail + ' failed');
 // Evidence the zone really changed: the host offset at the export instant.
