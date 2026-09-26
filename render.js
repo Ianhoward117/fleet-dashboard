@@ -14,7 +14,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { PROPERTIES, TRENDS, OUT_OF_SCOPE_NAMES } = require('./config');
+const { TRENDS, OUT_OF_SCOPE_NAMES } = require('./config');
 const { PAGE_FINDING_KEYS, LOG_FINDING_KEYS } = require('./normalize');
 
 const DATA_FILE = path.join(__dirname, 'data', 'normalized.json');
@@ -201,18 +201,6 @@ function sanityProblems(data) {
 
   // The out-of-scope name scan runs on the payload itself, in payloadProblems:
   // it has to see exactly what ships, and nothing else.
-
-  // A replace-mode override must account for every pair in its file: each one
-  // either lands on a roster room or is reported as not being on the roster.
-  // If those stop adding up, the page is quietly dropping assignments.
-  for (const o of (data.reconciliation && data.reconciliation.roomOverrides) || []) {
-    if (o.mappedRooms + o.roomsNotInRoster !== o.pairs) {
-      problems.push(
-        `${o.property}: room override accounts for ${o.mappedRooms} + ${o.roomsNotInRoster} pairs ` +
-          `but the file holds ${o.pairs} - some assignments went missing`
-      );
-    }
-  }
 
   // Every live-but-unmapped row must be attributed to a live property, by a
   // live esa_ tag or by the export's Location. An unattributed row would mean
@@ -404,13 +392,8 @@ function render() {
   const kb = (Buffer.byteLength(html) / 1024).toFixed(1);
   const triageCount = rooms.filter((r) => r.status === 'Issue' || r.status === 'Check').length;
   const recon = payload.reconciliation;
-  // The registry and override lists are gone as of the cutover, so every list
-  // is counted only if present.
-  const reconItems = [
-    'ghosts', 'unregisteredReporters', 'roomDeviceMismatches', 'orphanTelemetryRooms', 'duplicateRoomRows',
-    'liveButUnmapped', 'unknownToParticle', 'overrideRoomsNotInRoster', 'overrideRoomsWithoutDevice',
-    'overrideDiscardedAssignments', 'overrideOverwrittenAssignments', 'overrideRelocatedDevices',
-  ].reduce((n, k) => n + (Array.isArray(recon[k]) ? recon[k].length : 0), 0);
+  const reconItems = ['duplicateRoomRows', 'liveButUnmapped', 'unknownToParticle']
+    .reduce((n, k) => n + (Array.isArray(recon[k]) ? recon[k].length : 0), 0);
   console.log(`RENDER  wrote dist/index.html  ${kb} KB`);
   console.log(
     `RENDER  ${payload.properties.length} properties, ${rooms.length} rooms, ${triageCount} triage rows, ` +
