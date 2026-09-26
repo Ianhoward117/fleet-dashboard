@@ -1435,6 +1435,98 @@ t('a list link opened in a new tab (a modified click) is left to the browser', (
 });
 
 // ===========================================================================
+console.log('\nPAGE: filters in the URL');
+
+t('changing a filter writes it to the address bar at once; Clear takes it away', () => {
+  const page = runPage(payloadOf(fixture()), '?v=rooms');
+  const set = (id, v, ev = 'change') => { page.el(id).value = v; page.el(id).fire(ev); return page.url(); };
+  assert.strictEqual(set('fFlag', 'F4'), '?v=rooms&flag=F4');
+  assert.strictEqual(set('fProperty', '6178'), '?v=rooms&prop=6178&flag=F4');
+  assert.strictEqual(set('fSearch', 'drips', 'input'), '?v=rooms&prop=6178&flag=F4&q=drips');
+  assert.strictEqual(keep(set('fBattery', 'critical')), '?v=rooms&prop=6178&batt=critical&flag=F4&q=drips');
+  page.el('fClear').click();
+  assert.strictEqual(page.url(), '?v=rooms');
+});
+t('a link with filters opens with them applied, shown in the controls, and in the order written', () => {
+  const search = '?v=rooms&prop=6197&status=Ok&batt=critical&sort=daysSilent&dir=desc';
+  const page = runPage(payloadOf(listFixture()), search);
+  assert.deepStrictEqual(keep(['fProperty', 'fStatus', 'fBattery', 'fHeartbeat', 'fFlag'].map((id) => page.el(id).value)),
+    ['6197', 'Ok', 'critical', '', '']);
+  assert.deepStrictEqual(keep(rowsOf(page.html('tableBody')).map((tr) => whereOf(cellsOf(tr)))), ['6197/105', '6197/104']);
+  assert.strictEqual(page.url(), search);
+});
+t('a refresh keeps the filters: the address written, reloaded, gives the same list and controls', () => {
+  const p = payloadOf(listFixture());
+  const first = runPage(p, '?v=rooms');
+  for (const [id, v, ev] of [['fStatus', 'Ok', 'change'], ['fHeartbeat', 'stale', 'change'], ['fSearch', '9502', 'input']]) {
+    first.el(id).value = v;
+    first.el(id).fire(ev);
+  }
+  const again = runPage(p, first.url());
+  assert.strictEqual(keep(again.url()), first.url());
+  assert.strictEqual(again.html('tableBody'), first.html('tableBody'));
+  assert.strictEqual(rowsOf(again.html('tableBody')).length, 2);
+  for (const id of ['fProperty', 'fStatus', 'fAction', 'fBattery', 'fHeartbeat', 'fFlag', 'fSearch']) {
+    assert.strictEqual(again.el(id).value, first.el(id).value, id);
+  }
+});
+t('legacy links still resolve: ?v=triage with or without filters, and #view hashes', () => {
+  const p = payloadOf(fixture());
+  const cases = [
+    ['?v=triage', '', '?v=rooms&status=attention'],
+    ['?v=triage&prop=6178', '', '?v=rooms&prop=6178&status=attention'],
+    ['?v=triage&status=Issue', '', '?v=rooms&status=Issue'],
+    ['', '#recon', '?v=recon'],
+    ['', '#rooms', '?v=rooms'],
+  ];
+  for (const [search, hash, url] of cases) assert.strictEqual(keep(runPage(p, search, { hash }).url()), url, search + hash);
+  assert.strictEqual(runPage(p, '?v=triage').el('view-table').hidden, false);
+});
+t('a value the controls cannot show is dropped, never applied unseen', () => {
+  const p = payloadOf(fixture());
+  const page = runPage(p, '?v=rooms&prop=9829&status=ok&action=Nope&batt=dead&hb=soon&flag=F9&sort=evil&dir=desc');
+  assert.deepStrictEqual(keep(['fProperty', 'fStatus', 'fAction', 'fBattery', 'fHeartbeat', 'fFlag'].map((id) => page.el(id).value)),
+    ['', '', '', '', '', '']);
+  assert.strictEqual(page.url(), '?v=rooms');
+  assert.strictEqual(page.text('rowCount'), '6 of 6 rooms');
+  const ok = runPage(p, '?v=rooms&hb=stale&flag=F9');
+  assert.strictEqual(ok.url(), '?v=rooms&hb=stale', 'a valid filter survives beside an invalid one');
+  assert.strictEqual(rowsOf(ok.html('tableBody')).length, 1);
+});
+t('every value a control offers survives a link: filters, and every sortable column', () => {
+  const p = payloadOf(listFixture());
+  const page = runPage(p, '?v=rooms');
+  const optionsOf = (html) => [...html.matchAll(/<option value="([^"]*)">/g)].map((m) => unesc(m[1])).filter(Boolean);
+  const battery = optionsOf((TEMPLATE_HTML.match(/<select id="fBattery">([\s\S]*?)<\/select>/) || [])[1] || '');
+  const sortKeys = [...TEMPLATE_HTML.matchAll(/<th class="sortable" data-key="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepStrictEqual(keep(battery), ['critical', 'warn', 'ok', 'unknown']);
+  assert.strictEqual(keep(sortKeys.length), 8);
+  const offered = [
+    ['prop', optionsOf(page.html('fProperty')).concat(p.properties.map((x) => x.code))],
+    ['status', optionsOf(page.html('fStatus'))], ['action', optionsOf(page.html('fAction')).concat(['None'])],
+    ['batt', battery], ['hb', optionsOf(page.html('fHeartbeat'))], ['flag', optionsOf(page.html('fFlag'))],
+  ];
+  for (const [param, values] of offered) {
+    assert.ok(values.length, param);
+    for (const v of values) {
+      const search = '?v=rooms&' + param + '=' + encodeURIComponent(v);
+      assert.strictEqual(runPage(p, search).url(), search, search);
+    }
+  }
+  for (const k of sortKeys) {
+    const search = '?v=rooms&sort=' + k + '&dir=desc';
+    assert.strictEqual(runPage(p, search).url(), search, search);
+  }
+});
+t('summary still wins over filters in the URL, and keeps them for the full view', () => {
+  const page = runPage(payloadOf(listFixture()), '?view=summary&v=rooms&flag=F4');
+  assert.deepStrictEqual(modeOf(page), SUMMARY_MODE);
+  page.el('summaryExit').click();
+  assert.strictEqual(page.url(), '?v=rooms&flag=F4');
+  assert.strictEqual(rowsOf(page.html('tableBody')).length, 4);
+});
+
+// ===========================================================================
 console.log('\nverify-live.js: what the published page must carry');
 
 const V = require('./verify-live');

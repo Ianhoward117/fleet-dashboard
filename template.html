@@ -856,13 +856,35 @@
     }
   }
 
+  /* What each filter may hold: exactly what its control offers. The Battery
+     options and the sortable columns are the template's own markup, listed
+     here in its order. Search text is anything. */
+  var BATTERY_FILTERS = ['critical', 'warn', 'ok', 'unknown'];
+  var SORT_KEYS = ['property', 'room', 'deviceName', 'status', 'daysSilent', 'battery', 'actionItem', 'batteryTimestamp'];
+  function allowedValues(k) {
+    if (k === 'property') return DATA.properties.map(function (p) { return p.code; });
+    if (k === 'status') return ['attention', 'Issue', 'Check', 'Ok'];
+    if (k === 'action') return actionTypes;
+    if (k === 'battery') return BATTERY_FILTERS;
+    if (k === 'hb') return hbBuckets.map(function (b) { return b.key; });
+    if (k === 'flag') return ['any', 'F1', 'F2', 'F3', 'F4'];
+    return null;
+  }
+
   /* Set every filter from a query - a filter it does not name is cleared -
      and return the view it asks for. The page's own address on load and a
-     link's href on a click both come through here. */
+     link's href on a click both come through here. A value no control can
+     show (a typo, a property since removed) is dropped: applied unseen, it
+     would empty the list with nothing on screen to say why. */
   function readParams(u) {
     var v = u.get('v');
-    Object.keys(PARAM).forEach(function (k) { state[k] = u.get(PARAM[k]) || ''; });
-    state.sortKey = u.get('sort') || null;
+    Object.keys(PARAM).forEach(function (k) {
+      var val = u.get(PARAM[k]) || '';
+      var ok = allowedValues(k);
+      state[k] = !ok || ok.indexOf(val) !== -1 ? val : '';
+    });
+    var sort = u.get('sort');
+    state.sortKey = SORT_KEYS.indexOf(sort) !== -1 ? sort : null;
     state.sortDir = u.get('dir') === 'desc' ? -1 : 1;
     // Links saved while the separate triage tab existed still resolve: they
     // land on the room list pre-filtered to everything needing attention.
