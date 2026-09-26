@@ -328,6 +328,8 @@ const PAGE_SCRIPT = (() => {
 function runPage(payload, search = '', opts = {}) {
   const els = new Map();
   const blobs = [];
+  const urls = []; // every address the page wrote with replaceState, in order
+  const focused = { id: null }; // the element the page last moved focus to
   // The viewer's clock. With opts.now, Date.now() and a bare new Date() read
   // it; every other use of Date is the real one. Without it the page runs on
   // the real clock, as it always has. Interval timers never fire on their own:
@@ -352,6 +354,7 @@ function runPage(payload, search = '', opts = {}) {
       getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
       removeAttribute(k) { delete this.attrs[k]; },
       click() { for (const fn of this.listeners.click || []) fn({ preventDefault() {} }); },
+      focus() { focused.id = this.id; },
       fire(ev) { for (const fn of this.listeners[ev] || []) fn({ preventDefault() {} }); },
     };
     return e;
@@ -376,7 +379,7 @@ function runPage(payload, search = '', opts = {}) {
   const ctx = {
     document,
     location: { search, hash: '', pathname: '/' },
-    history: { replaceState() {} },
+    history: { replaceState(s, t, u) { urls.push(u); } },
     URLSearchParams,
     Blob: FakeBlob,
     URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
@@ -397,6 +400,9 @@ function runPage(payload, search = '', opts = {}) {
     html: (id) => byId(id).innerHTML,
     text: (id) => byId(id).textContent,
     el: byId,
+    ids: () => [...els.keys()],
+    url: () => urls[urls.length - 1],
+    focused: () => focused.id,
     intervals: () => timers.map((x) => x.ms),
     advance(ms) {
       const end = clock.now + ms;
@@ -916,6 +922,226 @@ t('the cutoff is read from the payload, never typed into the page', () => {
 t('an unconfirmed cutoff says so on the banner', () => {
   const text = bannerOf(runPage(withPageAge({ confirmed: false, maxDays: 7 }), '', { now: AT + 8 * DAYMS }));
   assert.strictEqual(text, STALE(8) + ' (7-day cutoff unconfirmed)');
+});
+
+// ===========================================================================
+console.log('\nPAGE: summary view (a presentation switch, not access control)');
+
+/* What a viewer can see: every element the page drew, unless it or the
+   region it sits in is hidden. Regions are read from template.html, so an
+   element moved out of a hidden section is caught here. What the page drew
+   counts attributes and all (a tooltip is one hover away). The template's
+   static markup is not seen here, and the fake DOM applies no CSS: each has
+   a test of its own below. The payload script is never drawn:
+   it carries every room in every view, which is why summary view is not
+   access control. */
+const TEMPLATE_HTML = fs.readFileSync(path.join(__dirname, 'template.html'), 'utf8');
+const REGIONS = [['view-table', '</section>'], ['view-rollup', '</section>'], ['view-recon', '</section>'],
+  ['tabs', '</nav>'], ['summaryBar', '</div>']];
+function regionOf(id) {
+  const at = TEMPLATE_HTML.indexOf(' id="' + id + '"');
+  for (const [rid, close] of REGIONS) {
+    const s = TEMPLATE_HTML.indexOf(' id="' + rid + '"');
+    if (id !== rid && s !== -1 && at > s && at < TEMPLATE_HTML.indexOf(close, s)) return rid;
+  }
+  return null;
+}
+function onScreen(page) {
+  return page.ids().filter((id) => {
+    if (id === 'payload' || page.el(id).hidden) return false;
+    const r = regionOf(id);
+    return !(r && page.el(r).hidden);
+  }).map((id) => page.el(id).innerHTML + '\n' + page.el(id).textContent).join('\n');
+}
+const DEVICE_NAME = /\bP2?-\d{3,4}\b/;
+const SUMMARY_HIST = [-12, -11, -10, -1, 0].map((o) => rec(o, 50));
+const SUMMARY_TRENDS = { windowDays: 30, annotations: [{ date: END, label: 'consolidated sheet', charts: 'all' }] };
+const summaryPayload = (data = fixture()) => R.buildPayload(data, SUMMARY_HIST, SUMMARY_TRENDS);
+const modeOf = (page) => keep({
+  pressed: page.el('summaryToggle').getAttribute('aria-pressed'),
+  marker: !page.el('summaryBar').hidden,
+  tabs: !page.el('tabs').hidden,
+  views: ['view-rollup', 'view-table', 'view-recon'].filter((id) => !page.el(id).hidden),
+  url: page.url(),
+});
+const SUMMARY_MODE = { pressed: 'true', marker: true, tabs: false, views: ['view-rollup'], url: '?view=summary' };
+
+t('the switch is a header button with aria-pressed; the marker starts hidden and has its own way back', () => {
+  const header = TEMPLATE_HTML.slice(TEMPLATE_HTML.indexOf('<header>'), TEMPLATE_HTML.indexOf('</header>'));
+  const btn = (header.match(/<button\b[^>]*\bid="summaryToggle"[^>]*>/) || [])[0];
+  assert.ok(btn, 'no #summaryToggle button in the header');
+  assert.ok(/\saria-pressed="false"/.test(btn) && /\stype="button"/.test(btn), btn);
+  const bar = (TEMPLATE_HTML.match(/<div\b[^>]*\bid="summaryBar"[^>]*>[\s\S]*?<\/div>/) || [])[0];
+  assert.ok(bar, 'no #summaryBar');
+  assert.ok(/^<div\b[^>]*\shidden[\s>]/.test(bar), bar);
+  assert.ok(/Summary view/.test(bar), bar);
+  assert.ok(/<button\b[^>]*\bid="summaryExit"/.test(bar), bar);
+});
+t('?view=summary opens in summary view: marker on, tabs and room views hidden, only the mode in the URL', () => {
+  assert.deepStrictEqual(modeOf(runPage(summaryPayload(), '?view=summary')), SUMMARY_MODE);
+});
+t('without it the page opens as it always has', () => {
+  assert.deepStrictEqual(modeOf(runPage(summaryPayload(), '')),
+    { pressed: 'false', marker: false, tabs: true, views: ['view-rollup'], url: '?v=rollup' });
+  assert.deepStrictEqual(modeOf(runPage(summaryPayload(), '?view=full&v=recon')),
+    { pressed: 'false', marker: false, tabs: true, views: ['view-recon'], url: '?v=recon' });
+});
+t('the switch toggles the mode and the URL; switching back restores the view and its filters', () => {
+  const page = runPage(summaryPayload(), '?v=rooms&prop=6178&status=attention');
+  const normal = { pressed: 'false', marker: false, tabs: true, views: ['view-table'], url: '?v=rooms&prop=6178&status=attention' };
+  assert.deepStrictEqual(modeOf(page), normal);
+  page.el('summaryToggle').click();
+  assert.deepStrictEqual(modeOf(page), SUMMARY_MODE);
+  page.el('summaryToggle').click();
+  assert.deepStrictEqual(modeOf(page), normal);
+  assert.strictEqual(rowsOf(page.html('tableBody')).length, 1);
+  // The marker's own button is the one-click way back, and focus does not
+  // vanish with the bar that held it.
+  page.el('summaryToggle').click();
+  page.el('summaryExit').click();
+  assert.deepStrictEqual(modeOf(page), normal);
+  assert.strictEqual(page.focused(), 'summaryToggle');
+});
+t('the stylesheet lets [hidden] win over the flex display the tabs and the marker are given', () => {
+  // The browser's own [hidden] rule loses to any author display rule, and nav
+  // and .viewbar have one: without these the tabs show in summary and the
+  // marker in the full view.
+  const css = TEMPLATE_HTML.match(/<style>([\s\S]*?)<\/style>/)[1];
+  const hiders = [...css.matchAll(/([^{}]+)\{\s*display:\s*none;?\s*\}/g)]
+    .flatMap((m) => m[1].split(',').map((s) => s.trim()));
+  for (const sel of ['section[hidden]', 'nav[hidden]', '.viewbar[hidden]']) assert.ok(hiders.includes(sel), sel);
+  assert.ok(/<nav id="tabs"/.test(TEMPLATE_HTML) && /<div id="summaryBar" class="viewbar"/.test(TEMPLATE_HTML));
+});
+t('the template’s own markup outside the room views names no device and quotes no note', () => {
+  let html = TEMPLATE_HTML.slice(TEMPLATE_HTML.indexOf('<body>'), TEMPLATE_HTML.indexOf('<script'));
+  for (const [open, close] of [['<nav id="tabs"', '</nav>'], ['<section id="view-table"', '</section>'], ['<section id="view-recon"', '</section>']]) {
+    const s = html.indexOf(open);
+    html = html.slice(0, s) + html.slice(html.indexOf(close, s));
+  }
+  assert.ok(/id="summaryToggle"/.test(html) && /id="summaryBar"/.test(html), 'the header and marker are scanned');
+  assert.ok(!DEVICE_NAME.test(html), (html.match(DEVICE_NAME) || [])[0]);
+});
+t('with both ?view=summary and ?v=, summary wins; leaving it lands on the ?v= view', () => {
+  for (const s of ['?v=rooms&view=summary', '?view=summary&v=recon', '?v=triage&view=summary']) {
+    assert.deepStrictEqual(modeOf(runPage(summaryPayload(), s)), SUMMARY_MODE, s);
+  }
+  const page = runPage(summaryPayload(), '?v=triage&view=summary');
+  page.el('summaryExit').click();
+  assert.deepStrictEqual(modeOf(page).url, '?v=rooms&status=attention');
+  assert.strictEqual(page.el('fStatus').value, 'attention');
+});
+t('summary shows each card: Ok / Issue / Check, triage count, heartbeat buckets, battery classes, battery badge', () => {
+  const page = runPage(summaryPayload(), '?view=summary');
+  const cards = page.html('cards').split('<div class="card">').slice(1);
+  assert.strictEqual(cards.length, 3);
+  const kpi = (card, label) => Number((card.match(new RegExp('<div class="v"[^>]*>(\\d+)</div><div class="l">' + label + '</div>')) || [])[1]);
+  assert.deepStrictEqual(keep(cards.map((c) => kpi(c, 'Triage'))), [1, 1, 0], 'Issue + Check per property');
+  assert.deepStrictEqual(keep(cards.map((c) => ['Rooms', 'Reporting', 'Never heard', 'No device'].map((l) => kpi(c, l)))),
+    [[3, 2, 0, 1], [2, 2, 0, 0], [1, 1, 0, 0]]);
+  for (const c of cards) {
+    const mix = [...c.matchAll(/<span style="width:[^"]*" title="([^"]*)"/g)].map((m) => m[1].split(':')[0]);
+    assert.ok(['Ok', 'Check', 'Issue'].every((s) => mix.includes(s)), mix.join());
+    assert.deepStrictEqual([...c.matchAll(/<span class="bl">([^<]*)<\/span>/g)].map((m) => unesc(m[1])),
+      ['< 2 days', '2-7 days', '> 7 days', 'Never', 'No device']);
+    assert.ok(/<div class="mh">Battery/.test(c) && /Healthy <span class="n">\d+/.test(c), c.slice(0, 300));
+    assert.ok(c.includes('<div class="fl">Battery data</div>') && c.includes('~8.0d old'));
+    assert.ok(/Sheet export as of <b>/.test(c));
+  }
+});
+t('summary shows the three stamps, and the status, live and fleet triage trends with their markers', () => {
+  const page = runPage(summaryPayload(), '?view=summary');
+  const fmt = (iso) => new Date(iso).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  assert.deepStrictEqual([page.text('sheetAsOf'), page.text('hbAsOf'), page.text('builtAt')],
+    [fmt('2026-09-25T16:48:26.425Z'), fmt(BUILT), fmt(BUILT)]);
+  const fleet = svgsOf(page.html('fleetStrip'));
+  assert.strictEqual(keep(fleet.length), 1, 'the fleet triage trend only');
+  assert.ok(/<div class="mh">Triage rows<\/div>/.test(page.html('fleetStrip')));
+  const cards = page.html('cards').split('<div class="card">').slice(1);
+  for (const c of cards) {
+    assert.ok(/<div class="mh">Status trend<\/div>/.test(c) && /<div class="mh">Devices heard from<\/div>/.test(c));
+    assert.strictEqual(svgsOf(c).length, 2, 'status and live, nothing else');
+  }
+  for (const svg of fleet.concat(svgsOf(page.html('cards')))) {
+    assert.deepStrictEqual(marksOf(svg), [xOf(29, Number(svg.match(/width="(\d+)"/)[1]))]);
+  }
+  assert.strictEqual((page.html('cards').match(/consolidated sheet/g) || []).length, 3);
+  assert.ok(/consolidated sheet/.test(page.html('fleetStrip')));
+});
+t('summary hides the room list, Reconciliation, the tabs with their counts, and the CSV export', () => {
+  // Where each lives in the template: every one sits in a region summary hides.
+  assert.deepStrictEqual(keep(['tableBody', 'fCsv', 'fSearch', 'nRooms', 'nRecon', 'reconFindings', 'reconNotes', 'reconBlocks']
+    .map(regionOf)), ['view-table', 'view-table', 'view-table', 'tabs', 'tabs', 'view-recon', 'view-recon', 'view-recon']);
+  const page = runPage(summaryPayload(), '?view=summary');
+  for (const id of ['view-table', 'view-recon', 'tabs']) assert.strictEqual(page.el(id).hidden, true, id);
+  assert.strictEqual(page.html('tableBody'), '', 'a cold summary load never draws the room list');
+});
+t('summary hides findings, F2 coverage and every awaiting-room-mapping count and chart', () => {
+  const d = fixture();
+  d.properties[1].rooms[1].flags = [{ code: 'F1', text: 'P2-0433 is also listed in 9502/308, another property' }];
+  const normal = onScreen(runPage(summaryPayload(d), '')) + onScreen(runPage(summaryPayload(d), '?v=recon'));
+  assert.ok(/awaiting room mapping/.test(normal) && /F2 can only check/.test(normal) && /data-goto/.test(normal), 'control');
+  const s = onScreen(runPage(summaryPayload(d), '?view=summary'));
+  for (const re of [/awaiting room mapping/i, /Live, awaiting/, /class="flag/, /F2 can only check/, /Sheet findings/,
+    /data-goto/, /Reconciliation/, /\bF[1-4]\b/]) {
+    assert.ok(!re.test(s), re + ' is on screen: ' + (s.match(re) || [])[0]);
+  }
+});
+t('nothing on screen in summary names a device or quotes a note, loaded cold or switched from any view', () => {
+  const d = fixture();
+  d.properties[0].rooms[1].notes = 'Guest says the head drips';
+  d.reconciliation.duplicateRoomRows = [{ property: '6197', propertyName: NAMES[6197], room: '102', count: 2,
+    entries: [{ status: 'Issue', actionItem: 'None', notes: 'Second row says it drips too' }] }];
+  const p = summaryPayload(d);
+  const NOTE = /head drips|drips too|Replaced with/;
+  const control = onScreen(runPage(p, '?v=rooms')) + onScreen(runPage(p, '?v=recon'));
+  assert.ok(DEVICE_NAME.test(control) && NOTE.test(control), 'control: the full views do show them');
+  const switched = (from) => { const x = runPage(p, from); x.el('summaryToggle').click(); return x; };
+  for (const [label, page] of [['cold', runPage(p, '?view=summary')], ['from rooms', switched('?v=rooms&q=P2')],
+    ['from recon', switched('?v=recon')], ['from rollup', switched('')]]) {
+    const s = onScreen(page);
+    assert.ok(!DEVICE_NAME.test(s), label + ': ' + (s.match(DEVICE_NAME) || [])[0]);
+    assert.ok(!NOTE.test(s), label + ': ' + (s.match(NOTE) || [])[0]);
+    assert.strictEqual(page.url(), '?view=summary', label + ': no search text or filter left in the address bar');
+  }
+});
+t('the caption names awaiting room mapping in the full view only, and is otherwise the same sentence', () => {
+  const early = [-12, -11].map((o) => { const r = rec(o, 50); delete r.liveUnder2d; return r; });
+  const p = R.buildPayload(fixture(), early.concat([-10, -1, 0].map((o) => rec(o, 50))), SUMMARY_TRENDS);
+  const cap = (search) => unesc(runPage(p, search).html('fleetStrip').match(/<div class="trendcap">([\s\S]*?)<\/div>/)[1]);
+  const full = cap('');
+  const sum = cap('?view=summary');
+  assert.ok(full.endsWith(' Live-series tracking — devices heard from, and devices awaiting room mapping — began Sep 15 2026.'), full);
+  assert.ok(sum.endsWith(' Live-series tracking — devices heard from — began Sep 15 2026.'), sum);
+  assert.strictEqual(sum, full.replace(', and devices awaiting room mapping', ''));
+  keep(sum);
+});
+t('a card’s duplicated-rows caveat stays in summary: it qualifies the room count on screen and names no room', () => {
+  const d = fixture();
+  d.properties[0] = property('6197', d.properties[0].rooms.concat([room('6197', 102, { status: 'Issue', notes: 'Second row for this room' })]));
+  const card = runPage(summaryPayload(d), '?view=summary').html('cards').split('<div class="card">')[1];
+  const note = unesc((card.match(/<div class="cardnote">([\s\S]*?)<\/div>/) || [])[1] || '');
+  assert.strictEqual(keep(note), '4 rows cover 3 distinct rooms — some rooms appear twice.');
+});
+t('the stale banner stands in summary view, and switching does not touch it', () => {
+  const page = runPage(payloadOf(fixture()), '?view=summary', { now: AT + 8 * DAYMS });
+  assert.strictEqual(bannerOf(page), STALE(8));
+  page.el('summaryExit').click();
+  assert.strictEqual(bannerOf(page), STALE(8));
+  page.el('summaryToggle').click();
+  assert.strictEqual(daysIn(bannerOf(page)), 8);
+  assert.strictEqual(keep(bannerOf(runPage(payloadOf(fixture()), '?view=summary', { now: AT + HOUR }))), null);
+});
+t('the normal view is unchanged: no triage KPI, awaiting lines kept, and a summary round trip redraws it exactly', () => {
+  const page = runPage(summaryPayload(), '');
+  const before = [page.html('cards'), page.html('fleetStrip')];
+  assert.ok(!/<div class="l">Triage<\/div>/.test(before[0]));
+  assert.ok(/awaiting room mapping/.test(before[0]) && /Live, awaiting room mapping/.test(before[1]));
+  assert.strictEqual(svgsOf(before[1]).length, 2);
+  page.el('summaryToggle').click();
+  assert.notStrictEqual(page.html('fleetStrip'), before[1]);
+  page.el('summaryToggle').click();
+  assert.deepStrictEqual([page.html('cards'), page.html('fleetStrip')], before);
+  keep(before[1].length);
 });
 
 // ===========================================================================

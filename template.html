@@ -83,6 +83,28 @@
   .tone-bad  { background: var(--bad-bg);  color: var(--bad-fg);  border-color: var(--bad-line); }
   .tone-flat { background: var(--flat-bg); color: var(--flat-fg); border-color: var(--flat-line); }
 
+  /* The summary switch. Pressed, it takes the accent colours, so the header
+     itself says which view is on. */
+  .modebtn {
+    font: inherit; font-size: 12px; font-weight: 600; cursor: pointer;
+    color: var(--ink-soft); background: var(--bg);
+    border: 1px solid var(--line); border-radius: 999px; padding: 3px 11px;
+  }
+  .modebtn:hover { color: var(--ink); border-color: var(--ink-faint); }
+  .modebtn[aria-pressed="true"] { color: var(--panel); background: var(--accent); border-color: var(--accent); }
+  .modebtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ---------- summary view marker ---------- */
+  /* Stands where the tabs were, so the summary is never mistaken for the whole page. */
+  .viewbar {
+    display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap;
+    padding: 7px 16px; font-size: 13px; color: var(--ink-soft);
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    box-shadow: inset 3px 0 0 var(--brand);
+  }
+  .viewbar b { color: var(--accent); font-weight: 600; }
+  .viewbar .btn { margin-left: auto; padding: 4px 10px; font-size: 12.5px; }
+
   /* ---------- stale-page banner ---------- */
   /* Colours come from its tone class; this only lays it out. Border longhands,
      so the tone's border-color is not reset. */
@@ -113,7 +135,7 @@
   }
 
   main { padding: 14px 16px 48px; max-width: 1400px; margin: 0 auto; }
-  section[hidden] { display: none; }
+  section[hidden], nav[hidden], .viewbar[hidden] { display: none; }
 
   /* ---------- filters ---------- */
   .filters {
@@ -284,6 +306,9 @@
     .stale { padding: 9px 12px; font-size: 13px; }
     header { position: static; padding: 10px 12px 8px; }
     .built { margin-left: 0; flex-basis: 100%; }
+    .modebtn { margin-left: auto; }
+    .viewbar { padding: 7px 12px; font-size: 12.5px; }
+    .viewbar .vb-note { display: none; }
     .chips { gap: 5px; }
     .chip { font-size: 11px; padding: 2px 7px; }
     .chip .lbl { display: none; }
@@ -336,6 +361,8 @@
       <img src="{{LOGO_DATA_URI}}" alt="Shower Stream" width="26" height="26">
       <h1>Shower Stream <span class="sub">&middot; Fleet &amp; Ops</span></h1>
     </div>
+    <button type="button" class="modebtn" id="summaryToggle" aria-pressed="false"
+      title="For presenting: fleet and property totals only, with no rooms, devices, notes or findings on screen. Not access control: the page still carries every room.">Summary</button>
     <div class="built">
       <div title="The oldest of the properties&rsquo; sheet export stamps; each card shows its own. Battery readings inside an export can be older: the battery badges say how old.">Sheet export as of <span id="sheetAsOf">&mdash;</span></div>
       <div>Heartbeats as of <span id="hbAsOf">&mdash;</span> <span class="livetag">live</span></div>
@@ -344,6 +371,13 @@
   </div>
   <div class="chips" id="snapChips"></div>
 </header>
+
+<!-- Summary view's marker, shown in place of the tabs. A presentation switch,
+     not access control: the payload below carries every room either way. -->
+<div id="summaryBar" class="viewbar" hidden>
+  <span><b>Summary view</b><span class="vb-note"> &middot; fleet and property totals; room-level detail hidden</span></span>
+  <button type="button" class="btn" id="summaryExit">Full view</button>
+</div>
 
 <nav id="tabs" role="tablist">
   <button role="tab" data-view="rollup" aria-selected="true">Fleet rollup</button>
@@ -532,6 +566,15 @@
     for (var i = 0; i < hbBuckets.length; i++) if (hbBuckets[i].key === key) return hbBuckets[i];
     return { key: key, label: key, tone: 'flat' };
   }
+
+  // ----------------------------------------------------------- summary view
+  /* A presentation switch for meetings: the fleet and property totals and
+     trends, and nothing that names a room, a device or a note. It changes
+     only what is drawn - every room is still in this page's payload - so it
+     is not access control. ?view=summary opens it and wins over ?v=. It is
+     read before anything is drawn, so a summary load never draws room
+     detail; the switch itself is wired up with the tabs, below. */
+  var summary = new URLSearchParams(location.search).get('view') === 'summary';
 
   // ---------------------------------------------------------------- header
   /* Three stamps, three meanings (CUTOVER.md §7). The sheet export stamp is
@@ -769,7 +812,9 @@
     u.set('v', currentView);
     Object.keys(PARAM).forEach(function (k) { if (state[k]) u.set(PARAM[k], state[k]); });
     if (state.sortKey) { u.set('sort', state.sortKey); u.set('dir', state.sortDir === 1 ? 'asc' : 'desc'); }
-    var qs = u.toString();
+    // Summary view writes its mode and nothing else: filters and search text
+    // are room-level, and the address bar is on screen too.
+    var qs = summary ? 'view=summary' : u.toString();
     try {
       history.replaceState(null, '', qs ? '?' + qs : location.pathname);
     } catch (e) {
@@ -1143,7 +1188,7 @@
     return items.slice(0, -1).join(', ') + ' and ' + items[items.length - 1];
   }
 
-  document.getElementById('cards').innerHTML = DATA.properties.map(function (p) {
+  function cardHtml(p) {
     var c = p.counts;
     var ba = p.batteryAge;
     var fb = bucketFor(ba.medianDays, TH.batteryAge);
@@ -1177,9 +1222,10 @@
     /* Live devices at this property that no room holds (CUTOVER.md §6). Shown
        only where the series has ever been nonzero: a property with nothing
        awaiting mapping does not need a permanent flat zero on its card. It
-       should fall toward 0 as DeviceId is filled in for new installs. */
+       should fall toward 0 as DeviceId is filled in for new installs. Never
+       in summary view, which leaves out every awaiting-mapping count. */
     var unmappedVals = propSeries(p.code, 'unmappedLive');
-    var showUnmapped = everNonZero(unmappedVals);
+    var showUnmapped = !summary && everNonZero(unmappedVals);
     var unmappedTrend = showUnmapped
       ? trendRow([{ label: 'awaiting room mapping', tone: 'warn', vals: unmappedVals }],
                  'live device{s} awaiting room mapping', { chart: p.code })
@@ -1198,7 +1244,7 @@
     var notes = [];
     if (c.rooms !== c.distinctRooms) notes.push(c.rooms + ' rows cover ' + c.distinctRooms + ' distinct rooms &mdash; some rooms appear twice.');
     if (!TH.batteryVoltage.confirmed) notes.push('Battery cutoffs unconfirmed &mdash; voltages shown unclassified.');
-    if (awaiting > 0) {
+    if (awaiting > 0 && !summary) {
       notes.push('<span class="await">+' + awaiting + ' live device' + (awaiting === 1 ? '' : 's')
         + ' awaiting room mapping &rarr; <a href="#" data-goto="recon">Reconciliation</a></span>');
     }
@@ -1211,6 +1257,11 @@
        once, a device Particle has never heard, and no device at all (D11). */
     var never = p.heartbeatHistogram[TH.heartbeatAge.neverBucket.key] || 0;
     var noDevice = p.heartbeatHistogram[TH.heartbeatAge.noDeviceBucket.key] || 0;
+
+    /* Summary view only: this property's triage count, as the room list's
+       Issue + Check filter counts it - summary has no room list to ask.
+       Kept after the three KPIs that sum to the rooms. */
+    var triage = ALL_ROOMS.filter(function (r) { return r.property === p.code && NEEDS_ATTENTION(r); }).length;
 
     return '<div class="card">'
       + '<div class="card-hd">'
@@ -1231,6 +1282,9 @@
         + '<div class="kpi"><div class="v" style="color:' + toneVar('good') + '">' + c.reporting + '</div><div class="l">Reporting</div></div>'
         + '<div class="kpi"><div class="v" style="color:' + toneVar(never ? 'bad' : 'flat') + '">' + never + '</div><div class="l">Never heard</div></div>'
         + '<div class="kpi"><div class="v" style="color:' + toneVar('flat') + '">' + noDevice + '</div><div class="l">No device</div></div>'
+        + (summary
+            ? '<div class="kpi"><div class="v" style="color:' + toneVar(triage ? 'bad' : 'flat') + '">' + triage + '</div><div class="l">Triage</div></div>'
+            : '')
       + '</div>'
       + '<div class="metric"><div class="mh">Status mix</div>' + stack(mix, c.rooms) + legend(mix) + '</div>'
       + '<div class="metric"><div class="mh">Status trend</div>' + statusTrend + '</div>'
@@ -1252,7 +1306,11 @@
         + '</div>'
       + (notes.length ? '<div class="cardnote">' + notes.join('<br>') + '</div>' : '')
       + '</div>';
-  }).join('');
+  }
+  function renderCards() {
+    document.getElementById('cards').innerHTML = DATA.properties.map(cardHtml).join('');
+  }
+  renderCards();
 
   // --------------------------------------------------------- fleet trends
   /* The two totals that only mean anything fleet-wide.
@@ -1261,8 +1319,11 @@
      because 9829 was removed from the dashboard that day, not because 81 rooms
      were fixed. History files are a record and are never rewritten, so the
      step is real and stays; it gets a marker and a label rather than being
-     smoothed, truncated or quietly rebased. */
-  (function renderFleetTrends() {
+     smoothed, truncated or quietly rebased.
+
+     Summary view draws the triage line only: awaiting room mapping is a
+     reconciliation count, and summary leaves those out. */
+  function renderFleetTrends() {
     var el = document.getElementById('fleetStrip');
     if (!el) return;
     if (!HIST.length) {
@@ -1293,10 +1354,10 @@
           + trendRow([{ label: 'triage rows', tone: 'bad', vals: triage }], 'triage row{s}',
                      { w: 260, h: 44, chart: 'fleet' })
         + '</div>'
-        + '<div class="metric"><div class="mh">Live, awaiting room mapping</div>'
+        + (summary ? '' : '<div class="metric"><div class="mh">Live, awaiting room mapping</div>'
           + trendRow([{ label: 'awaiting room mapping', tone: 'warn', vals: unmapped }],
                      'live device{s} awaiting room mapping', { w: 260, h: 44, chart: 'fleet' })
-        + '</div>'
+        + '</div>')
       + '</div>'
       + annoLine('fleet')
       + '<div class="trendcap">Trends cover the last ' + DAYS + ' days, '
@@ -1305,11 +1366,13 @@
         + ' A day with no record, or a record written before a field existed, is drawn as a gap, '
         + 'never as a zero.'
         + (liveStart
-            ? ' Live-series tracking &mdash; devices heard from, and devices awaiting room mapping &mdash; '
+            ? ' Live-series tracking &mdash; devices heard from'
+              + (summary ? '' : ', and devices awaiting room mapping') + ' &mdash; '
               + 'began ' + fmtDay(liveStart) + ' ' + liveStart.split('-')[0] + '.'
             : '')
       + '</div>';
-  })();
+  }
+  renderFleetTrends();
 
   // -------------------------------------------------------- reconciliation
 
@@ -1444,16 +1507,41 @@
   function show(name, skipUrl) {
     if (!views[name]) name = DEFAULT_VIEW;
     currentView = name;
-    var target = views[name];
+    // Summary view draws the rollup, whichever tab is remembered underneath it.
+    var target = summary ? views.rollup : views[name];
     ['view-table', 'view-rollup', 'view-recon'].forEach(function (id) {
       document.getElementById(id).hidden = (id !== target);
     });
     document.querySelectorAll('#tabs button').forEach(function (b) {
       b.setAttribute('aria-selected', String(b.dataset.view === name));
     });
-    if (name === 'rooms') renderTable();
+    if (name === 'rooms' && !summary) renderTable();
     if (!skipUrl) writeUrl();
   }
+
+  /* The summary switch (see "summary view" above). On, it redraws the cards
+     and the fleet strip without their room-level lines and hides the tabs and
+     the views behind them; off, it redraws them in full and returns to the
+     tab and filters that were open. The header button and the marker's own
+     button both work it. */
+  var summaryToggle = document.getElementById('summaryToggle');
+  function drawSummaryChrome() {
+    document.getElementById('tabs').hidden = summary;
+    document.getElementById('summaryBar').hidden = !summary;
+    summaryToggle.setAttribute('aria-pressed', String(summary));
+  }
+  function setSummary(on) {
+    summary = on;
+    renderCards();
+    renderFleetTrends();
+    drawSummaryChrome();
+    show(currentView);
+  }
+  summaryToggle.addEventListener('click', function () { setSummary(!summary); });
+  document.getElementById('summaryExit').addEventListener('click', function () {
+    setSummary(false);
+    summaryToggle.focus(); // the bar holding this button is now hidden: keep focus somewhere real
+  });
 
   document.querySelectorAll('#tabs button').forEach(function (b) {
     b.addEventListener('click', function () { show(b.dataset.view); });
@@ -1479,6 +1567,7 @@
   buildHeartbeatOptions();
   buildFlagOptions();
   syncControlsFromState();
+  drawSummaryChrome();
   show(initial, true);
   writeUrl();
 })();
