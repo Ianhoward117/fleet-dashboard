@@ -1,6 +1,10 @@
 'use strict';
 
 /**
+ * FROZEN at the cutover. Samples device ids from py-exports.json, which only
+ * 02-exports.js writes, from the retired legacy workbooks; it will not run
+ * against the current config. Run it from the tag `pre-cutover`.
+ *
  * Door A - cached device vitals.  GET /v1/diagnostics/:deviceId/last
  * (scope devices.diagnostics:get, confirmed against the Cloud API reference).
  *

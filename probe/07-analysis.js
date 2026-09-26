@@ -1,6 +1,10 @@
 'use strict';
 
 /**
+ * FROZEN at the cutover. Reads py-exports.json, which only 02-exports.js
+ * writes, from the retired legacy workbooks; it will not run against the
+ * current config. Run it from the tag `pre-cutover`.
+ *
  * Deeper reads on the three things the join surfaced:
  *   1. group membership vs py_export coverage (is 6178 actually dead?)
  *   2. whether the API carries anything room-shaped (v2 needs a room map)

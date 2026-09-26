@@ -1,6 +1,11 @@
 'use strict';
 
 /**
+ * FROZEN at the cutover. Reads the legacy work-order workbooks (sheetKey,
+ * py_export_* tabs), which the build no longer fetches and config.js no
+ * longer describes; it will not run against the current config. Run it from
+ * the tag `pre-cutover`.
+ *
  * Read the py_export tabs straight out of the freshly-fetched workbooks and
  * emit a flat join-ready JSON. Deliberately a separate, read-only reader:
  * normalize.js is production code and this probe must not touch it.

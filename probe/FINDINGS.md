@@ -324,6 +324,11 @@ node probe/06-join.js                                  # API vs py_export diff
 node probe/07-analysis.js                              # groups, rooms, anomalies
 ```
 
+Since the cutover, `02`, `03`, `06` and `07` are frozen: they read the retired
+legacy work-order workbooks (through `py-exports.json`) and will not run against
+the current config. Run them from the tag `pre-cutover`; `00`, `01`, `04` and
+`05` still run as written.
+
 `probe/lib.js` exposes only a `get()` helper — there is deliberately no
 POST/PUT/DELETE path in the probe code.
 

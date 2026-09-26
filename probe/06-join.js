@@ -1,6 +1,10 @@
 'use strict';
 
 /**
+ * FROZEN at the cutover. Joins against py-exports.json, which only
+ * 02-exports.js writes, from the retired legacy workbooks; it will not run
+ * against the current config. Run it from the tag `pre-cutover`.
+ *
  * Step 4 - diff the Particle API pull against the latest py_exports.
  * Join key is the Particle device ID (ParticleDeviceId in the exports,
  * `id` in the API). Duplicates are reported before joining, and the join
