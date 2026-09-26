@@ -380,7 +380,7 @@ t('across properties', () => {
 t('the same row twice for one room is not two rooms', () => {
   assert.strictEqual(N.findDuplicateDevices([row('6197', 101, hex(1)), row('6197', 101, hex(1))]).length, 0);
 });
-// Ported from test-overrides.js 109-129: the two-property claims, now findings.
+// Ported from the retired test-overrides.js (109-129 at tag pre-cutover): the two-property claims, now findings.
 t('ported: same device claimed by two properties -> a finding, not a throw', () => {
   const rows = N.partitionRoomRows(
     N.parseRoomstatusRows([raw(6178, 101, hex(433)), raw(9502, 308, hex(433)), raw(6197, 100, null)], K()).rows,
