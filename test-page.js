@@ -1325,6 +1325,31 @@ t('F4: the CSV carries every column the list shows, plus the ids and the finding
   assert.strictEqual(recs[3].Finding, 'F4: note names P2-0823, which matches no Particle device name exactly; DeviceId shows P-0823');
   assert.strictEqual(recs[0].Note, 'Replaced with P2-0556 on 09/23/26.', 'the flagged row’s note, not the second row’s');
 });
+t('F4: one room, two rows on one DeviceId - an unnamed note first, then a named one - keeps each note with its own finding', () => {
+  const d = listFixture();
+  const rows6178 = d.properties[1].rooms.slice();
+  rows6178.splice(rows6178.findIndex((r) => r.room === '302') + 1, 0, room('6178', 302, {
+    notes: 'Replaced with P2-0610 on 09/23/26.', flags: [{ code: 'F4', text: 'note names P2-0610; DeviceId shows P2-0302' }] }));
+  d.properties[1] = property('6178', rows6178);
+  d.findings.f4.push({ flag: 'F4', property: '6178', room: '302', sheetRow: 303, note: 'Replaced with P2-0610 on 09/23/26.',
+    kind: 'replaced with', namedUnit: 'P2-0610', namedDeviceId: hex(610), namedDeviceName: 'P2-0610', namedHeartbeatBucket: 'stale',
+    namedDaysSilent: 101, reason: 'DeviceId shows another unit', deviceId: hex(302), deviceIdCell: 'formula' });
+  const page = runPage(payloadOf(d), '?v=recon');
+  const shown = listRows(listBlock(page, 'f4')).map(cellsOf).filter((c) => c.Room === '302').map((c) => [c['Note names'], c.Note]);
+  assert.deepStrictEqual(keep(shown), [['P2-0610', 'Replaced with P2-0610 on 09/23/26.'], ['unnamed', 'Replaced device on 9/23/26.']]);
+  const csv = csvRecords(page.listCsv('f4')[0]).filter((r) => r.Room === '302').map((r) => [r['Note names'], r.Finding]);
+  assert.deepStrictEqual(csv, [['P2-0610', 'F4: note names P2-0610; DeviceId shows P2-0302'],
+    ['unnamed', 'F4: note records a replacement but names no unit; DeviceId shows P2-0302']]);
+});
+t('F4: a finding with no room row to join is still listed, and its CSV still downloads', () => {
+  const d = listFixture();
+  d.properties[1].rooms.find((r) => r.room === '101' && r.flags.length).flags = [];
+  const page = runPage(payloadOf(d), '?v=recon');
+  const row = listRows(listBlock(page, 'f4')).map(cellsOf).find((c) => c.Room === '101');
+  assert.deepStrictEqual(keep([row['DeviceId shows'], row['Note names'], row.Note]), ['—', 'P2-0556', '']);
+  const rec = csvRecords(page.listCsv('f4')[0]).find((r) => r.Room === '101');
+  assert.deepStrictEqual([rec['DeviceId (Particle ID)'], rec.Finding, rec.Note], [hex(101), '', '']);
+});
 t('Marked Ok, but…: Ok rooms the data disagrees with, by reason and then days silent, with the reasons as chips', () => {
   const page = runPage(payloadOf(listFixture()), '?v=recon');
   const rows = listRows(listBlock(page, 'okbut'));
@@ -1502,6 +1527,14 @@ t('a value the controls cannot show is dropped, never applied unseen', () => {
   const ok = runPage(p, '?v=rooms&hb=stale&flag=F9');
   assert.strictEqual(ok.url(), '?v=rooms&hb=stale', 'a valid filter survives beside an invalid one');
   assert.strictEqual(rowsOf(ok.html('tableBody')).length, 1);
+});
+t('a view name that is not a view - even one every object inherits - opens the rollup', () => {
+  const p = payloadOf(fixture());
+  for (const [search, hash] of [['?v=constructor', ''], ['?v=__proto__', ''], ['?v=hasOwnProperty&flag=F4', ''], ['', '#toString']]) {
+    const page = runPage(p, search, { hash });
+    assert.deepStrictEqual(keep(['view-rollup', 'view-table', 'view-recon'].filter((id) => !page.el(id).hidden)), ['view-rollup'], search + hash);
+    assert.ok(/^\?v=rollup(&|$)/.test(page.url()), search + hash + ' -> ' + page.url());
+  }
 });
 t('every value a control offers survives a link: filters, and every sortable column', () => {
   const p = payloadOf(listFixture());

@@ -892,7 +892,7 @@
       if (!state.status) state.status = 'attention';
       return 'rooms';
     }
-    return v && views[v] ? v : DEFAULT_VIEW;
+    return isView(v) ? v : DEFAULT_VIEW;
   }
 
   function readUrl() {
@@ -1530,22 +1530,26 @@
   /* F4: the backfill list. A finding carries no note (render.js leaves the
      note on its room row) and the page's rooms carry no sheet row, so each
      finding takes the first room row it describes - same property, room and
-     DeviceId, tagged F4 - that no earlier finding took. */
+     DeviceId, with an F4 tag of its own kind (named, or unnamed) - that no
+     earlier finding took. Both lists run in sheet order, as the rooms do. */
   function f4Items() {
     var taken = {};
-    function roomFor(f) {
+    function roomFor(f, unnamed) {
       for (var i = 0; i < ALL_ROOMS.length; i++) {
         var r = ALL_ROOMS[i];
         if (!taken[i] && r.property === f.property && r.room === f.room
-            && (r.deviceId || null) === (f.deviceId || null) && hasFlag(r, 'F4')) {
+            && (r.deviceId || null) === (f.deviceId || null)
+            && flagsOf(r).some(function (x) { return x.code === 'F4' && Boolean(x.unnamed) === unnamed; })) {
           taken[i] = true;
           return r;
         }
       }
       return null;
     }
-    return (F.f4 || []).concat(F.f4Unnamed || []).map(function (f, i) {
-      return { property: f.property, room: f.room, f: f, r: roomFor(f), i: i };
+    var named = (F.f4 || []).map(function (f) { return { f: f, r: roomFor(f, false) }; });
+    var unnamed = (F.f4Unnamed || []).map(function (f) { return { f: f, r: roomFor(f, true) }; });
+    return named.concat(unnamed).map(function (x, i) {
+      return { property: x.f.property, room: x.f.room, f: x.f, r: x.r, i: i };
     }).sort(function (a, b) { return byPlace(a, b) || a.i - b.i; });
   }
   // What DeviceId shows for the room: Particle's name for the id, or why there is none.
@@ -1588,6 +1592,7 @@
     return '<span title="' + esc(CELL_TIPS[kind]) + '">' + word + '</span>';
   }
   function f4Text(r) {
+    if (!r) return '';
     return flagsOf(r).filter(function (x) { return x.code === 'F4'; }).map(function (x) { return 'F4: ' + x.text; }).join(' | ');
   }
 
@@ -1868,10 +1873,12 @@
     recon: 'view-recon'
   };
   var DEFAULT_VIEW = 'rollup';
+  // A view the page has: not a name every object inherits (?v=constructor).
+  function isView(v) { return typeof v === 'string' && Object.prototype.hasOwnProperty.call(views, v); }
   var currentView = DEFAULT_VIEW;
 
   function show(name, skipUrl) {
-    if (!views[name]) name = DEFAULT_VIEW;
+    if (!isView(name)) name = DEFAULT_VIEW;
     currentView = name;
     // Summary view draws the rollup, whichever tab is remembered underneath it.
     var target = summary ? views.rollup : views[name];

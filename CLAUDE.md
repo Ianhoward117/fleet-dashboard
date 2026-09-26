@@ -358,7 +358,7 @@ commit that still carries their code: read it there
   marker label. The room list, its CSV and the rollup are unchanged; the
   Reconciliation tab's count still covers findings and the reconciliation
   lists only. The tag `pre-worklists` marks `main` just before it.
-- **Tests:** `npm test` — 86 cutover + 109 page, identical in both zones.
+- **Tests:** `npm test` — 87 cutover + 112 page, identical in both zones.
 
 ## Open items
 
