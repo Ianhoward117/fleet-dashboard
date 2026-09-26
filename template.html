@@ -1415,7 +1415,7 @@
   }
 
   blocks += block('Duplicated room rows', R.duplicateRoomRows.length,
-    'One room occupying several Room Status rows, each with its own action item. All rows are kept in the queue.',
+    'One room on several rows of the consolidated sheet&rsquo;s roomstatus tab, each with its own action item. All rows are kept in the queue.',
     table(['Prop', 'Room', 'Rows', 'Entries'], R.duplicateRoomRows, function (d) {
       return '<tr>' + propCell(d)
         + '<td class="num" data-label="Room"><b>' + esc(d.room) + '</b></td>'

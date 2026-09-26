@@ -577,6 +577,11 @@ t('live-but-unmapped rows say how they were attributed (D2)', () => {
   assert.deepStrictEqual(keep(how), ['tag esa-6197', 'attributed by export Location']);
   assert.ok(!/unattributed/.test(page.html('reconBlocks')));
 });
+t('duplicated room rows are described in the consolidated sheet’s terms, not the retired Room Status tab', () => {
+  const s = runPage(payloadOf(fixture())).html('reconBlocks');
+  assert.ok(/roomstatus tab/.test(s), s.slice(0, 400));
+  assert.ok(!/Room Status/.test(s));
+});
 t('the fleet strip no longer explains an untagged pool', () => {
   const hist = [
     { date: '2026-09-24', triageRows: 60, unmappedLive: 73, properties: {} },
