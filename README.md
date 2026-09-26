@@ -75,7 +75,7 @@ The header carries three times, and each means something different.
 | **Heartbeats as of** | When the Particle device list was read — which is when the page was built. Days-silent is counted from here. Heartbeats are live, so they cannot be stale. |
 | **Page built** | When this page was generated. If it is more than a day old, the daily refresh is not completing. |
 
-**A red banner above every view** means the page was built more than 7 days ago (`THRESHOLDS.pageAge`), or cannot tell when it was built: the daily refresh has stopped landing, so read every figure as out of date.
+**A red banner above every view** means the page was built more than 7 days ago (`THRESHOLDS.pageAge`): the daily refresh has stopped landing, so read every figure as out of date. If it says instead that it cannot tell when it was built, the page itself is malformed.
 
 None of these vouches for **battery** data. Battery readings are taken by a
 separate collector and can be much older than the export that carries them —

@@ -32,11 +32,11 @@ This file is the working context: current state, decisions, and the traps.
   `credential.https://github.com.helper = !gh auth git-credential`.
 - **`app.netlify.com` and `localhost` are blocked in the Claude browser pane.**
   Netlify changes are Ian's to make: guide, do not drive.
-- **Headless Chrome never exits on the built page.** `--dump-dom` and
-  `--screenshot` wait on the stale banner's hourly timer; the output is written
-  first, so wrap the call in `perl -e 'alarm 15; exec @ARGV' ...` and expect
-  exit 142. It will not lay out narrower than 500 px either: check phone width
-  by loading the page in a 390 px iframe.
+- **Headless Chrome on this Mac often does not exit** after `--dump-dom` or
+  `--screenshot`, on any page, even a plain one with no script. The output is
+  written first, so wrap the call in `perl -e 'alarm 15; exec @ARGV' ...` and
+  expect exit 142. It will not lay out narrower than 500 px either: check phone
+  width by loading the page in a 390 px iframe.
 - **The daily bot commits to `main`.** Always `git pull --rebase` before
   pushing. A stale checkout makes `git diff origin/main` look like it deletes
   history files; it does not — they are commits you have not pulled.
@@ -235,7 +235,8 @@ These no longer run. Their code is still present until Block 5 deletes it
   `runPage(payload, search, { now })` and fire the timer with `advance(ms)`.
 - **A summary-only view for Greg and David is still wanted** (Ian,
   2026-09-25): an in-page toggle, per the Sep 9 lean, not Cloudflare Access.
-  Not yet scoped.
+  Not yet scoped. A toggle changes only what is drawn: every room still ships
+  in the page's payload, so it does not settle the access-control open item.
 
 ## Current state (2026-09-26, cutover merged)
 
@@ -269,7 +270,7 @@ These no longer run. Their code is still present until Block 5 deletes it
 - **History:** records for Aug 16 – Sep 15, then Sep 25 (legacy values) and
   Sep 26 onwards (consolidated). **Sep 16–24 do not exist and are never
   backfilled** (CUTOVER.md §0); every trend chart shows them as a gap.
-- **Tests:** `npm test` — 15 override + 78 cutover + 68 page, identical in
+- **Tests:** `npm test` — 15 override + 78 cutover + 70 page, identical in
   both zones.
 
 ## Open items
