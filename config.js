@@ -79,30 +79,8 @@ const PARTICLE = {
 PARTICLE.devicesPath = () => '/v1/products/' + PARTICLE.productId + '/devices';
 
 // ---------------------------------------------------------------------------
-// Registry tabs read for exclusion only
+// Out-of-scope site names
 // ---------------------------------------------------------------------------
-
-/**
- * These registry tabs are read solely to learn which Particle device IDs are
- * NOT part of the in-scope fleet, so they can be filtered out of the
- * "live but unmapped" reconciliation list. Their devices are never rendered
- * anywhere on the page.
- *
- *   The Lab_P2                     - bench/lab hardware
- *   Fort Custer Education Center   - out of scope by the brief
- *   ESA 9829 - Austin - Northwest  - property fully uninstalled 2026-08-19
- *
- * Tab names must match the registry workbook exactly.
- *
- * RETIRED at the cutover and no longer read: an unmapped device now needs a
- * live esa_ tag or a heartbeatstatus Location to be listed at all, which is
- * what keeps this hardware off the page (CUTOVER.md §6). Block 5 deletes it.
- */
-const EXCLUDED_REGISTRY_TABS = [
-  'The Lab_P2',
-  'Fort Custer Education Center',
-  'ESA 9829 - Austin - Northwest',
-];
 
 /**
  * Out-of-scope site names that must never reach the page in a structured
@@ -128,38 +106,28 @@ const OUT_OF_SCOPE_NAMES = ['The Lab', 'Fort Custer', 'ESA 9829'];
  *   code        - ESA property number, used as the stable internal key. It is
  *                 also the value of the consolidated sheet's Location column.
  *   name        - free-text display name; edit at will
- *   sheetKey    - RETIRED at the cutover: the legacy work-order workbook.
- *   registryTab - RETIRED at the cutover: the legacy registry tab.
- *                 The build no longer reads either; probe/02-exports.js still
- *                 does. Block 5 of the cutover deletes both.
  *   tag         - optional status pill shown next to the name, or null
  *
- * The Lab_P2, Fort Custer Education Center and ESA 9829 tabs exist in the
- * registry workbook but are deliberately out of scope: they are not listed
- * here and therefore never reach the page. 9829 was fully uninstalled on
- * 2026-08-19; its tab is retained in the workbook for a later phase that
- * reuses it as an exclusion list.
+ * The Lab, Fort Custer and ESA 9829 are deliberately out of scope: they are
+ * not listed here, so a roomstatus row whose Location is not one of these codes
+ * is dropped and logged, never counted (D15), and OUT_OF_SCOPE_NAMES keeps
+ * their names out of every structured field (D7). 9829 was fully uninstalled
+ * on 2026-08-19.
  */
 const PROPERTIES = [
   {
     code: '6197',
     name: 'Round Rock - Southwest',
-    sheetKey: 'wo_6197',
-    registryTab: null, // no registry tab exists - triage/telemetry only
     tag: null,
   },
   {
     code: '6178',
     name: 'Austin - Southwest',
-    sheetKey: 'wo_6178',
-    registryTab: 'ESA 6178 - Austin - Southwest',
     tag: null,
   },
   {
     code: '9502',
     name: 'Austin - Airport',
-    sheetKey: 'wo_9502',
-    registryTab: 'ESA 9502 - Austin - Austin Airp',
     tag: 'active-mode paused',
   },
 ];
@@ -194,8 +162,9 @@ const THRESHOLDS = {
   },
 
   /**
-   * Age of a property's export snapshot (the CurrentTime column in
-   * py_export_heartbeatstatus), in days. Drives the freshness badge.
+   * Age of a property's sheet export (heartbeatstatus.CurrentTime for its
+   * Location, D5), in days. Sets properties[].snapshot.bucket, which ships in
+   * the payload but is not drawn.
    */
   snapshotFreshness: {
     confirmed: true, // mirrors the confirmed heartbeatAge cutoffs
@@ -373,7 +342,6 @@ module.exports = {
   SHEET_TIME_ZONE,
   SITE_URL,
   PARTICLE,
-  EXCLUDED_REGISTRY_TABS,
   OUT_OF_SCOPE_NAMES,
   PROPERTIES,
   THRESHOLDS,
