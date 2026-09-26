@@ -95,7 +95,8 @@ const NAMES = { 6197: 'Round Rock - Southwest', 6178: 'Austin - Southwest', 9502
 function room(property, rm, spec = {}) {
   const deviceId = spec.deviceId === undefined ? hex(Number(rm)) : spec.deviceId;
   const bucket = spec.bucket || (deviceId ? 'fresh' : 'noDevice');
-  const daysSilent = bucket === 'fresh' ? 0.5 : bucket === 'aging' ? 3 : bucket === 'stale' ? 30 : null;
+  const daysSilent = spec.daysSilent !== undefined ? spec.daysSilent
+    : bucket === 'fresh' ? 0.5 : bucket === 'aging' ? 3 : bucket === 'stale' ? 30 : null;
   return {
     property,
     propertyName: NAMES[property],
@@ -110,7 +111,7 @@ function room(property, rm, spec = {}) {
     daysSilent,
     heartbeatBucket: bucket,
     battery: spec.battery === undefined ? 3.9 : spec.battery,
-    batteryClass: spec.battery === null ? 'unknown' : 'ok',
+    batteryClass: spec.batteryClass || (spec.battery === null ? 'unknown' : 'ok'),
     batteryTimestamp: '2026-09-17T17:24:00.000Z',
     batteryAgeDays: 8.0,
     actionItem: spec.actionItem || 'None',
@@ -367,9 +368,10 @@ function runPage(payload, search = '', opts = {}) {
   byId('payload').textContent = JSON.stringify(payload);
   const tabs = ['rollup', 'rooms', 'recon'].map((v) => Object.assign(mk(null, 'button'), { dataset: { view: v } }));
   const docListeners = [];
+  const created = []; // every element the page made itself: the CSV links carry their file name
   const document = {
     getElementById: byId,
-    createElement: (tag) => mk(null, tag),
+    createElement: (tag) => { const e = mk(null, tag); created.push(e); return e; },
     querySelectorAll: (sel) => (sel === '#tabs button' ? tabs : []),
     addEventListener: (ev, fn) => docListeners.push([ev, fn]),
     body: { appendChild() {}, removeChild() {} },
@@ -379,7 +381,7 @@ function runPage(payload, search = '', opts = {}) {
   }
   const ctx = {
     document,
-    location: { search, hash: '', pathname: '/' },
+    location: { search, hash: opts.hash || '', pathname: '/' },
     history: { replaceState(s, t, u) { urls.push(u); } },
     URLSearchParams,
     Blob: FakeBlob,
@@ -420,12 +422,29 @@ function runPage(payload, search = '', opts = {}) {
       byId('fCsv').click();
       return blobs[blobs.length - 1].replace(/^﻿/, '');
     },
-    // A link the page drew with data-goto, followed as a click would.
-    goto(attrs) {
+    // A link or button the page drew, clicked: attrs are its attributes. closest()
+    // matches an [attr] selector only when the element carries that attribute,
+    // as a browser would. mods holds modifier keys (e.g. { metaKey: true }).
+    // Returns whether the page kept the browser from following it.
+    goto(attrs, mods = {}) {
       const target = { getAttribute: (k) => (k in attrs ? attrs[k] : null) };
+      const closest = (sel) => {
+        const m = /^\[([\w-]+)\]$/.exec(sel);
+        return !m || m[1] in attrs ? target : null;
+      };
+      let prevented = false;
       for (const [ev, fn] of docListeners) {
-        if (ev === 'click') fn({ target: { closest: () => target }, preventDefault() {} });
+        if (ev === 'click') fn({ target: { closest }, preventDefault() { prevented = true; }, ...mods });
       }
+      return prevented;
+    },
+    // A worklist's CSV, as its Download CSV button makes it: [text, file name].
+    listCsv(key) {
+      const before = blobs.length;
+      this.goto({ 'data-csv': key });
+      if (blobs.length === before) return null;
+      const link = created.filter((e) => e.tagName === 'a').pop();
+      return [blobs[blobs.length - 1].replace(/^﻿/, ''), link && link.download];
     },
   };
 }
@@ -566,8 +585,8 @@ t('a findings summary gives F1-F4 counts, F2 with its coverage (D12)', () => {
 });
 t('each finding count links to All rooms filtered to that finding', () => {
   const page = runPage(payloadOf(fixture()));
-  assert.ok(/data-goto="rooms" data-flag="F4"/.test(page.html('reconFindings')));
-  page.goto({ 'data-goto': 'rooms', 'data-flag': 'F4' });
+  assert.ok(/href="\?v=rooms&amp;flag=F4" data-goto="rooms"/.test(page.html('reconFindings')), page.html('reconFindings'));
+  page.goto({ 'data-goto': 'rooms', href: '?v=rooms&flag=F4' });
   assert.strictEqual(rowsOf(page.html('tableBody')).length, 1);
   assert.strictEqual(page.el('fFlag').value, 'F4');
 });
@@ -1143,6 +1162,276 @@ t('the normal view is unchanged: no triage KPI, awaiting lines kept, and a summa
   page.el('summaryToggle').click();
   assert.deepStrictEqual([page.html('cards'), page.html('fleetStrip')], before);
   keep(before[1].length);
+});
+
+// ===========================================================================
+console.log('\nPAGE: Reconciliation worklists (Block 4)');
+
+/* A fixture with a room for every reason a worklist takes one, and rooms that
+   must stay off each list. Findings are in normalize's shape, notes on the
+   room rows as render.js ships them; F4 is listed out of order on purpose. */
+function listFixture() {
+  const F4 = (text, extra = {}) => ({ flags: [{ code: 'F4', text, ...extra }] });
+  const props = [
+    property('6197', [
+      room('6197', 101), // Ok, fresh, healthy: on no list
+      room('6197', 102, { status: 'Issue' }),
+      room('6197', 103, { deviceId: null }), // Ok, no device
+      room('6197', 104, { battery: 3.05, batteryClass: 'critical', daysSilent: 1.2 }), // Ok, battery only
+      room('6197', 105, { bucket: 'stale', daysSilent: 12.5, battery: 3.1, batteryClass: 'critical' }), // Ok, two reasons
+      room('6197', 106, { bucket: 'aging', daysSilent: 5 }), // Ok, aging is not stale
+      room('6197', 107, { status: 'Issue', bucket: 'stale', daysSilent: 40, battery: 3.0, batteryClass: 'critical' }), // not Ok
+      room('6197', 108, { battery: 3.3, batteryClass: 'warn' }), // Ok, marginal is not critical
+    ]),
+    property('6178', [
+      room('6178', 101, { notes: 'Replaced with P2-0556 on 09/23/26.', ...F4('note names P2-0556; DeviceId shows P2-0101') }),
+      room('6178', 101, { notes: 'Replaced batteries recently.' }), // a second row for the room, unflagged
+      room('6178', 116, { deviceId: null, notes: 'Replaced with P2-0564 on 09/23/26.', ...F4('note names P2-0564; DeviceId is blank') }),
+      room('6178', 302, { notes: 'Replaced device on 9/23/26.',
+        ...F4('note records a replacement but names no unit; DeviceId shows P2-0302', { unnamed: true }) }),
+      room('6178', 330, { bucket: 'never' }), // Ok, a device Particle never heard
+      room('6178', 418, { status: 'Check', deviceName: 'P-0823', notes: 'Flashing red LED - replaced with P2-0823 on 9/16.',
+        ...F4('note names P2-0823, which matches no Particle device name exactly; DeviceId shows P-0823') }),
+      room('6178', 428, { status: 'Check', deviceId: hex(433), deviceName: 'P2-0433',
+        flags: [{ code: 'F1', text: 'P2-0433 is also listed in 9502/308, another property' }] }),
+    ]),
+    property('9502', [
+      room('9502', 308, { deviceId: hex(433), deviceName: 'P2-0433', bucket: 'stale', daysSilent: 30, flags: [
+        { code: 'F1', text: 'P2-0433 is also listed in 6178/428, another property' },
+        { code: 'F2', text: 'P2-0433 is tagged esa_6178 in Particle, which belongs to 6178' }] }),
+      room('9502', 309, { bucket: 'stale', daysSilent: 90 }),
+    ], '2026-09-25T16:48:36.928Z'),
+  ];
+  const d = fixture();
+  d.properties = props;
+  d.triage = props.flatMap((p) => p.rooms).filter((r) => r.status === 'Issue' || r.status === 'Check');
+  const named = (rm, unit, id, bucket, days, reason, deviceId, cell, note) => ({
+    flag: 'F4', property: '6178', room: rm, sheetRow: Number(rm), note, kind: 'replaced with', namedUnit: unit,
+    namedDeviceId: id, namedDeviceName: id ? unit : null, namedHeartbeatBucket: bucket, namedDaysSilent: days,
+    reason, deviceId, deviceIdCell: cell,
+  });
+  d.findings = {
+    f1: fixture().findings.f1,
+    f2: [{ flag: 'F2', property: '9502', room: '308', sheetRow: 308, deviceId: hex(433), deviceIdShort: '000433',
+      deviceName: 'P2-0433', group: 'esa_6178', tagProperty: '6178' }],
+    f2Coverage: { 6197: { deviceRows: 7, checkable: 7, pctCheckable: 100 } },
+    f3: [],
+    f4: [
+      named('418', 'P2-0823', null, null, null, 'no exact Particle name', hex(418), 'typed', 'Flashing red LED - replaced with P2-0823 on 9/16.'),
+      named('101', 'P2-0556', hex(556), 'fresh', 0.4, 'DeviceId shows another unit', hex(101), 'formula', 'Replaced with P2-0556 on 09/23/26.'),
+      named('116', 'P2-0564', hex(564), 'stale', 21.3, 'DeviceId is blank', null, 'formula', 'Replaced with P2-0564 on 09/23/26.'),
+    ],
+    f4Unnamed: [{ flag: 'F4', property: '6178', room: '302', sheetRow: 302, note: 'Replaced device on 9/23/26.', kind: 'unnamed',
+      deviceId: hex(302), deviceIdCell: 'formula' }],
+    f4NotesRecognised: 4,
+  };
+  return d;
+}
+const textOf = (html) => unesc(String(html).replace(/<[^>]*>/g, '')).replace(/\s+/g, ' ').trim();
+function listBlock(page, key) {
+  const html = page.html('reconLists');
+  const at = html.indexOf(' id="list-' + key + '"');
+  if (at < 0) return null;
+  const next = html.indexOf(' id="list-', at + 1);
+  return html.slice(at, next < 0 ? html.length : next);
+}
+// A list's body rows: its table header is a <tr> too.
+const listRows = (block) => rowsOf((block.match(/<tbody>([\s\S]*?)<\/tbody>/) || [])[1] || '');
+const headOf = (block) => [textOf(block.match(/<h2>([\s\S]*?)<\/h2>/)[1]), Number(block.match(/<span class="n">(\d+)<\/span>/)[1])];
+const cellsOf = (tr) => Object.fromEntries([...tr.matchAll(/<td[^>]*\bdata-label="([^"]*)"[^>]*>([\s\S]*?)<\/td>/g)]
+  .map((m) => [unesc(m[1]), textOf(m[2])]));
+const whereOf = (c) => c.Prop.split(' ')[0] + '/' + c.Room;
+const linksOf = (block) => [...block.matchAll(/<a\b[^>]*\bhref="(\?[^"]*)"[^>]*>([\s\S]*?)<\/a>/g)]
+  .map((m) => [unesc(m[1]), textOf(m[2])]);
+function parseCsv(text) {
+  const out = [];
+  let rowCells = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { cell += '"'; i++; } else if (c === '"') quoted = false; else cell += c;
+    } else if (c === '"') quoted = true;
+    else if (c === ',') { rowCells.push(cell); cell = ''; }
+    else if (c === '\r' && text[i + 1] === '\n') { rowCells.push(cell); out.push(rowCells); rowCells = []; cell = ''; i++; }
+    else cell += c;
+  }
+  rowCells.push(cell);
+  out.push(rowCells);
+  return out;
+}
+const csvRecords = (text) => {
+  const [head, ...rest] = parseCsv(text);
+  return rest.map((cells) => Object.fromEntries(head.map((h, i) => [h, cells[i]])));
+};
+const CSV_NAME = /^shower-stream-[a-z0-9-]+-\d{4}-\d{2}-\d{2}\.csv$/;
+
+t('the lists stand on Reconciliation, in working order, each with a count in its heading', () => {
+  const page = runPage(payloadOf(listFixture()), '?v=recon');
+  assert.strictEqual(regionOf('reconLists'), 'view-recon');
+  const order = [...page.html('reconLists').matchAll(/ id="list-([a-z0-9]+)"/g)].map((m) => m[1]);
+  assert.deepStrictEqual(keep(order), ['f4', 'okbut', 'f1', 'f2', 'f3']);
+  assert.deepStrictEqual(keep(order.map((k) => headOf(listBlock(page, k)))), [
+    ['Replacement not in DeviceId', 4], ['Marked Ok, but…', 7], ['One device, two rooms', 1],
+    ['Location vs Particle tag', 1], ['DeviceId not usable', 0],
+  ]);
+});
+t('F4: one row per flagged room, by property then room, the unnamed note among them', () => {
+  const page = runPage(payloadOf(listFixture()), '?v=recon');
+  const rows = listRows(listBlock(page, 'f4')).map(cellsOf);
+  assert.deepStrictEqual(keep(rows.map((c) => [whereOf(c), c['DeviceId shows'], c['Note names'], c['Named unit'], c.Cell, c.Note])), [
+    ['6178/101', 'P2-0101', 'P2-0556', 'heard 10h ago', 'lookup', 'Replaced with P2-0556 on 09/23/26.'],
+    ['6178/116', 'blank', 'P2-0564', 'heard 21d ago', 'lookup', 'Replaced with P2-0564 on 09/23/26.'],
+    ['6178/302', 'P2-0302', 'unnamed', '—', 'lookup', 'Replaced device on 9/23/26.'],
+    ['6178/418', 'P-0823', 'P2-0823', 'not in Particle', 'typed', 'Flashing red LED - replaced with P2-0823 on 9/16.'],
+  ]);
+});
+t('F4: the named unit reads its own state - never heard, a shared name, and each heartbeat bucket in its tone', () => {
+  const d = listFixture();
+  const [, live, silent] = d.findings.f4;
+  Object.assign(live, { namedHeartbeatBucket: 'never', namedDaysSilent: null });
+  Object.assign(silent, { namedDeviceId: null, namedDeviceName: null, namedHeartbeatBucket: null, namedDaysSilent: null, reason: 'ambiguous name' });
+  const block = listBlock(runPage(payloadOf(d), '?v=recon'), 'f4');
+  const named = listRows(block).map(cellsOf).map((c) => c['Named unit']);
+  assert.deepStrictEqual(keep(named), ['never heard', 'name not unique in Particle', '—', 'not in Particle']);
+  const tone = listRows(listBlock(runPage(payloadOf(listFixture()), '?v=recon'), 'f4'))
+    .map((tr) => (tr.match(/data-label="Named unit"[^>]*><span style="color:([^;"]*)/) || [])[1] || null);
+  assert.deepStrictEqual(keep(tone), ['var(--good-fg)', 'var(--bad-fg)', null, null]);
+});
+t('F4: the CSV carries every column the list shows, plus the ids and the finding', () => {
+  const [csv, name] = runPage(payloadOf(listFixture()), '?v=recon').listCsv('f4');
+  assert.ok(CSV_NAME.test(name) && /-f4-/.test(name), name);
+  const recs = csvRecords(csv);
+  assert.deepStrictEqual(keep(Object.keys(recs[0])), ['Property', 'Property name', 'Room', 'DeviceId shows', 'DeviceId (Particle ID)',
+    'Note names', 'Named unit Particle ID', 'Named unit heartbeat', 'Named unit days silent', 'DeviceId cell', 'Finding', 'Note']);
+  assert.deepStrictEqual(keep(recs.map((r) => [r.Room, r['DeviceId shows'], r['DeviceId (Particle ID)'], r['Note names'],
+    r['Named unit Particle ID'], r['Named unit heartbeat'], r['Named unit days silent'], r['DeviceId cell']])), [
+    ['101', 'P2-0101', hex(101), 'P2-0556', hex(556), '< 2 days', '0.4', 'lookup'],
+    ['116', 'blank', '', 'P2-0564', hex(564), '> 7 days', '21.3', 'lookup'],
+    ['302', 'P2-0302', hex(302), 'unnamed', '', '', '', 'lookup'],
+    ['418', 'P-0823', hex(418), 'P2-0823', '', 'not in Particle', '', 'typed'],
+  ]);
+  assert.strictEqual(recs[3].Finding, 'F4: note names P2-0823, which matches no Particle device name exactly; DeviceId shows P-0823');
+  assert.strictEqual(recs[0].Note, 'Replaced with P2-0556 on 09/23/26.', 'the flagged row’s note, not the second row’s');
+});
+t('Marked Ok, but…: Ok rooms the data disagrees with, by reason and then days silent, with the reasons as chips', () => {
+  const page = runPage(payloadOf(listFixture()), '?v=recon');
+  const rows = listRows(listBlock(page, 'okbut'));
+  const chips = (tr) => [...tr.matchAll(/<span class="why[^"]*"[^>]*>([^<]*)<\/span>/g)].map((m) => unesc(m[1]));
+  assert.deepStrictEqual(keep(rows.map((tr) => [whereOf(cellsOf(tr)), chips(tr), cellsOf(tr)['Days silent']])), [
+    ['6197/103', ['no device'], 'No device'],
+    ['6178/116', ['no device'], 'No device'],
+    ['6178/330', ['never heard'], 'Never'],
+    ['9502/309', ['not heard in over 7 days'], '90d'],
+    ['9502/308', ['not heard in over 7 days'], '30d'],
+    ['6197/105', ['not heard in over 7 days', 'battery critical'], '13d'],
+    ['6197/104', ['battery critical'], '1.2d'],
+  ]);
+});
+t('Marked Ok, but… never changes a status: the rooms still read Ok everywhere else', () => {
+  const p = payloadOf(listFixture());
+  const page = runPage(p, '?v=rooms&status=Ok');
+  assert.strictEqual(rowsOf(page.html('tableBody')).length, p.rooms.filter((r) => r.status === 'Ok').length);
+  for (const r of rowsOf(page.html('tableBody'))) assert.strictEqual(cellsOf(r).Status, 'Ok');
+});
+t('the stale reason’s words come from the thresholds, never typed into the page', () => {
+  const p = payloadOf(listFixture());
+  p.thresholds = clone(p.thresholds);
+  p.thresholds.heartbeatAge.buckets[1].maxDays = 10;
+  assert.ok(/>not heard in over 10 days</.test(listBlock(runPage(p, '?v=recon'), 'okbut')));
+});
+t('Marked Ok, but…: its CSV lists the same rooms in the same order, reasons in words', () => {
+  const [csv, name] = runPage(payloadOf(listFixture()), '?v=recon').listCsv('okbut');
+  assert.ok(CSV_NAME.test(name) && /-ok-but-/.test(name), name);
+  const recs = csvRecords(csv);
+  assert.deepStrictEqual(keep(Object.keys(recs[0])), ['Property', 'Property name', 'Room', 'Device', 'Particle ID', 'Why', 'Heartbeat',
+    'Days silent', 'Last heartbeat', 'Battery V', 'Battery class', 'Action item', 'Notes']);
+  assert.deepStrictEqual(keep(recs.map((r) => [r.Property + '/' + r.Room, r.Why, r.Heartbeat])), [
+    ['6197/103', 'no device', 'No device'], ['6178/116', 'no device', 'No device'], ['6178/330', 'never heard', 'Never'],
+    ['9502/309', 'not heard in over 7 days', '> 7 days'], ['9502/308', 'not heard in over 7 days', '> 7 days'],
+    ['6197/105', 'not heard in over 7 days; battery critical', '> 7 days'], ['6197/104', 'battery critical', '< 2 days'],
+  ]);
+});
+t('F1 and F2: small lists naming the device, its rooms, and the tag that disagrees', () => {
+  const page = runPage(payloadOf(listFixture()), '?v=recon');
+  assert.deepStrictEqual(keep(listRows(listBlock(page, 'f1')).map(cellsOf)),
+    [{ Device: 'P2-0433', 'Particle ID': hex(433), Rooms: '6178/428 · 9502/308', 'Across properties': 'yes' }]);
+  const f2 = listRows(listBlock(page, 'f2')).map(cellsOf);
+  assert.deepStrictEqual(keep(f2.map((c) => [whereOf(c), c.Device, c['Particle tag'], c['Tag belongs to']])),
+    [['9502/308', 'P2-0433', 'esa_6178', '6178 Austin - Southwest']]);
+  const f1csv = csvRecords(page.listCsv('f1')[0]);
+  assert.deepStrictEqual(keep(f1csv), [{ Device: 'P2-0433', 'Particle ID': hex(433), Rooms: '6178/428; 9502/308', 'Across properties': 'yes' }]);
+  const f2csv = csvRecords(page.listCsv('f2')[0]);
+  assert.deepStrictEqual(keep(f2csv), [{ Property: '9502', 'Property name': 'Austin - Airport', Room: '308', Device: 'P2-0433',
+    'Particle ID': hex(433), 'Particle tag': 'esa_6178', 'Tag belongs to': '6178' }]);
+});
+t('F3 with nothing to list shows an empty state - no blank table, no CSV, no link', () => {
+  const block = listBlock(runPage(payloadOf(listFixture()), '?v=recon'), 'f3');
+  assert.ok(!/<table/.test(block), block);
+  const empty = textOf((block.match(/<div class="empty">([\s\S]*?)<\/div>/) || [])[1] || '');
+  assert.strictEqual(keep(empty), 'None today: every DeviceId is blank or the id of a device Particle knows.');
+  assert.ok(!/data-csv/.test(block) && !linksOf(block).length, block);
+  assert.strictEqual(runPage(payloadOf(listFixture()), '?v=recon').listCsv('f3'), null);
+});
+t('F3 with findings lists each, with its CSV and its link', () => {
+  const d = listFixture();
+  d.findings.f3 = [{ flag: 'F3', property: '6178', room: '330', sheetRow: 330, reason: 'unknown to Particle', value: hex(330) }];
+  d.properties[1].rooms.find((r) => r.room === '330').flags = [{ code: 'F3', text: 'DeviceId …000330 is not in the Particle product' }];
+  const page = runPage(payloadOf(d), '?v=recon');
+  const block = listBlock(page, 'f3');
+  assert.deepStrictEqual(keep(headOf(block)), ['DeviceId not usable', 1]);
+  assert.deepStrictEqual(listRows(block).map(cellsOf).map((c) => [whereOf(c), c.Problem, c['DeviceId holds']]),
+    [['6178/330', 'unknown to Particle', hex(330)]]);
+  assert.deepStrictEqual(linksOf(block), [['?v=rooms&flag=F3', 'Open in All rooms →']]);
+  assert.deepStrictEqual(csvRecords(page.listCsv('f3')[0]), [{ Property: '6178', 'Property name': 'Austin - Southwest', Room: '330',
+    Problem: 'unknown to Particle', 'DeviceId holds': hex(330) }]);
+});
+t('each list opens All rooms on the rooms it names, where the existing filters can say so', () => {
+  const p = payloadOf(listFixture());
+  const page = runPage(p, '?v=recon');
+  const links = ['f4', 'okbut', 'f1', 'f2'].map((k) => [k, linksOf(listBlock(page, k))]);
+  assert.deepStrictEqual(keep(links), [
+    ['f4', [['?v=rooms&flag=F4', 'Open in All rooms →']]],
+    ['okbut', [['?v=rooms&status=Ok&hb=noDevice', 'no device (2)'], ['?v=rooms&status=Ok&hb=never', 'never heard (1)'],
+      ['?v=rooms&status=Ok&hb=stale', 'not heard in over 7 days (3)'], ['?v=rooms&status=Ok&batt=critical', 'battery critical (2)']]],
+    ['f1', [['?v=rooms&flag=F1', 'Open in All rooms →']]],
+    ['f2', [['?v=rooms&flag=F2', 'Open in All rooms →']]],
+  ]);
+  const expect = { F4: 4, F1: 2, F2: 1 };
+  for (const [, list] of links) {
+    for (const [href, label] of list) {
+      const at = runPage(p, '?v=recon&prop=9502&q=zzz'); // filters already set are replaced, not added to
+      assert.strictEqual(at.goto({ 'data-goto': 'rooms', href }), true, href);
+      assert.strictEqual(at.url(), href, 'the address bar is the link: it can be shared as it stands');
+      assert.strictEqual(at.el('view-table').hidden, false);
+      const n = rowsOf(at.html('tableBody')).length;
+      const want = /flag=(F\d)/.test(href) ? expect[href.match(/flag=(F\d)/)[1]] : Number(label.match(/\((\d+)\)$/)[1]);
+      assert.strictEqual(n, want, href);
+    }
+  }
+});
+t('summary view shows no worklist, list link or list CSV button - loaded cold, or switched from Reconciliation', () => {
+  const p = R.buildPayload(listFixture(), SUMMARY_HIST, SUMMARY_TRENDS);
+  const LISTS = /Replacement not in DeviceId|Marked Ok, but|One device, two rooms|Location vs Particle tag|DeviceId not usable|data-csv|Download CSV|href="\?v=rooms|Open in All rooms|class="why/;
+  const control = onScreen(runPage(p, '?v=recon'));
+  assert.ok(LISTS.test(control) && DEVICE_NAME.test(control), 'control: the full view shows the lists');
+  const switched = runPage(p, '?v=recon');
+  switched.el('summaryToggle').click();
+  for (const [label, page] of [['cold', runPage(p, '?view=summary')], ['switched', switched], ['cold, recon underneath', runPage(p, '?view=summary&v=recon')]]) {
+    const s = onScreen(page);
+    assert.ok(!LISTS.test(s), label + ': ' + (s.match(LISTS) || [])[0]);
+    assert.ok(!DEVICE_NAME.test(s), label + ': ' + (s.match(DEVICE_NAME) || [])[0]);
+    assert.strictEqual(page.url(), '?view=summary', label);
+  }
+  keep('summary hides the lists');
+});
+t('a list link opened in a new tab (a modified click) is left to the browser', () => {
+  const page = runPage(payloadOf(listFixture()), '?v=recon');
+  for (const mods of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }]) {
+    assert.strictEqual(page.goto({ 'data-goto': 'rooms', href: '?v=rooms&flag=F4' }, mods), false, JSON.stringify(mods));
+    assert.strictEqual(page.url(), '?v=recon');
+  }
 });
 
 // ===========================================================================

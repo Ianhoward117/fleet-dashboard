@@ -297,6 +297,18 @@
   .fcount a { color: var(--accent); }
   .fsub { display: block; margin-top: 3px; font-size: 11.5px; color: var(--ink-faint); }
 
+  /* ---------- worklists ---------- */
+  /* A list's finding code sits before its heading, as the tag the room list uses. */
+  .recon-hd .flag { cursor: default; }
+  .listbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; margin: -1px 0 8px; font-size: 12.5px; }
+  .listbar a { color: var(--accent); }
+  .listbar .btn { padding: 4px 10px; font-size: 12.5px; margin-left: auto; }
+  /* Why a room marked Ok is on the Ok-but list: one chip per reason. */
+  .why {
+    display: inline-block; font-size: 11px; font-weight: 600; white-space: nowrap;
+    padding: 1px 7px; margin: 0 4px 2px 0; border-radius: 999px; border: 1px solid transparent;
+  }
+
   footer { max-width: 1400px; margin: 0 auto; padding: 0 16px 30px; font-size: 11.5px; color: var(--ink-faint); }
   footer code { font-family: var(--mono); font-size: 11px; }
 
@@ -339,6 +351,7 @@
     td.rowhead::before { display: none; }
     .notecell { max-width: none; }
     .notecell .clamp { display: block; -webkit-line-clamp: none; overflow: visible; }
+    .listbar .btn { margin-left: 0; }
     .freshness { margin-left: 0; width: 100%; text-align: left; }
 
     /* Fleet sparklines are wider than a card's. Let them shrink to the screen
@@ -453,6 +466,8 @@
   <section id="view-recon" role="tabpanel" hidden>
     <div id="reconFindings" class="recon-block"></div>
     <div id="reconNotes" class="recon-block"></div>
+    <!-- The worklists: each finding, and the Ok rooms the data disagrees with, one room per row. -->
+    <div id="reconLists"></div>
     <div id="reconBlocks"></div>
   </section>
 </main>
@@ -755,9 +770,27 @@
     }).join('');
   }
 
-  function rowHtml(r) {
+  /* Days silent and battery are drawn the same wherever a room is listed. */
+  function silentTd(r) {
     var hb = hbBucketMeta(r.heartbeatBucket);
+    return '<td class="num" data-label="Days silent" title="' + esc(silentTitle(r, hb)) + '">' + silentHtml(r, hb) + '</td>';
+  }
+  function batteryTd(r) {
     var batTone = BATTERY_TONES[r.batteryClass] || 'flat';
+    return '<td class="num" data-label="Battery" title="' + esc(BATTERY_LABELS[r.batteryClass] || '')
+        + (r.batteryAgeDays === null ? '' : ' · reading is approximately ' + fmtDays(r.batteryAgeDays) + ' old') + '">'
+        + (r.battery === null
+            ? '<span class="muted">—</span>'
+            : '<span style="color:' + toneVar(batTone) + ';font-weight:600">' + r.battery.toFixed(2) + '&thinsp;V</span>'
+              + (r.batteryAgeDays === null ? '' : ' <span class="muted">~' + fmtDays(r.batteryAgeDays) + '</span>'))
+        + '</td>';
+  }
+  function noteTd(notes, label) {
+    return '<td class="notecell" data-label="' + (label || 'Notes') + '"' + (notes ? ' title="' + esc(notes) + '"' : '') + '>'
+      + (notes ? '<span class="clamp">' + esc(notes) + '</span>' : '') + '</td>';
+  }
+
+  function rowHtml(r) {
     var batAgeBucket = bucketFor(r.batteryAgeDays, TH.batteryAge);
     return '<tr>'
       + '<td class="rowhead" data-label="Prop"><b>' + esc(r.property) + '</b> <span class="muted">' + esc(r.propertyName) + '</span></td>'
@@ -765,14 +798,8 @@
       + '<td class="mono" data-label="Device">' + (r.deviceName ? esc(r.deviceName) : '<span class="muted">—</span>') + '</td>'
       + '<td data-label="Status"><span class="pill ' + toneClass(STATUS_TONES[r.status] || 'flat') + '">' + esc(r.status) + '</span></td>'
       + '<td data-label="Findings">' + flagsHtml(r) + '</td>'
-      + '<td class="num" data-label="Days silent" title="' + esc(silentTitle(r, hb)) + '">' + silentHtml(r, hb) + '</td>'
-      + '<td class="num" data-label="Battery" title="' + esc(BATTERY_LABELS[r.batteryClass] || '')
-        + (r.batteryAgeDays === null ? '' : ' · reading is approximately ' + fmtDays(r.batteryAgeDays) + ' old') + '">'
-        + (r.battery === null
-            ? '<span class="muted">—</span>'
-            : '<span style="color:' + toneVar(batTone) + ';font-weight:600">' + r.battery.toFixed(2) + '&thinsp;V</span>'
-              + (r.batteryAgeDays === null ? '' : ' <span class="muted">~' + fmtDays(r.batteryAgeDays) + '</span>'))
-        + '</td>'
+      + silentTd(r)
+      + batteryTd(r)
       + '<td data-label="Action">' + (r.actionItem ? esc(r.actionItem) : '<span class="muted">—</span>') + '</td>'
       + '<td class="num" data-label="Battery read" title="'
         + (r.batteryTimestamp
@@ -781,8 +808,7 @@
         + (r.batteryTimestamp
             ? '<span style="color:' + toneVar(batAgeBucket ? batAgeBucket.tone : 'flat') + '">' + esc(fmtDateShort(r.batteryTimestamp)) + '</span>'
             : '<span class="muted">—</span>') + '</td>'
-      + '<td class="notecell" data-label="Notes"' + (r.notes ? ' title="' + esc(r.notes) + '"' : '') + '>'
-        + (r.notes ? '<span class="clamp">' + esc(r.notes) + '</span>' : '') + '</td>'
+      + noteTd(r.notes)
       + '</tr>';
   }
 
@@ -806,15 +832,23 @@
      address bar is silently accepted rather than thrown. */
   var urlStateWorks = true;
 
+  /* A view and its filters as a query string, in one fixed order. The
+     address bar and every "open in All rooms" link are written by this, so a
+     link on the page is exactly the address it leads to. */
+  function queryOf(view, st) {
+    var u = new URLSearchParams();
+    u.set('v', view);
+    Object.keys(PARAM).forEach(function (k) { if (st[k]) u.set(PARAM[k], st[k]); });
+    if (st.sortKey) { u.set('sort', st.sortKey); u.set('dir', st.sortDir === 1 ? 'asc' : 'desc'); }
+    return u.toString();
+  }
+  function roomsHref(filters) { return '?' + queryOf('rooms', filters); }
+
   function writeUrl() {
     if (!urlStateWorks) return;
-    var u = new URLSearchParams();
-    u.set('v', currentView);
-    Object.keys(PARAM).forEach(function (k) { if (state[k]) u.set(PARAM[k], state[k]); });
-    if (state.sortKey) { u.set('sort', state.sortKey); u.set('dir', state.sortDir === 1 ? 'asc' : 'desc'); }
     // Summary view writes its mode and nothing else: filters and search text
     // are room-level, and the address bar is on screen too.
-    var qs = summary ? 'view=summary' : u.toString();
+    var qs = summary ? 'view=summary' : queryOf(currentView, state);
     try {
       history.replaceState(null, '', qs ? '?' + qs : location.pathname);
     } catch (e) {
@@ -822,11 +856,11 @@
     }
   }
 
-  function readUrl() {
-    var u = new URLSearchParams(location.search);
+  /* Set every filter from a query - a filter it does not name is cleared -
+     and return the view it asks for. The page's own address on load and a
+     link's href on a click both come through here. */
+  function readParams(u) {
     var v = u.get('v');
-    // Legacy hash links (#rollup) still work.
-    if (!v && location.hash) v = location.hash.slice(1);
     Object.keys(PARAM).forEach(function (k) { state[k] = u.get(PARAM[k]) || ''; });
     state.sortKey = u.get('sort') || null;
     state.sortDir = u.get('dir') === 'desc' ? -1 : 1;
@@ -837,6 +871,13 @@
       return 'rooms';
     }
     return v && views[v] ? v : DEFAULT_VIEW;
+  }
+
+  function readUrl() {
+    var u = new URLSearchParams(location.search);
+    // Legacy hash links (#rollup) still work.
+    if (!u.get('v') && location.hash) u.set('v', location.hash.slice(1));
+    return readParams(u);
   }
 
   function syncControlsFromState() {
@@ -924,10 +965,11 @@
     var s = String(v);
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   }
-  document.getElementById('fCsv').addEventListener('click', function () {
-    var lines = [CSV_COLS.map(function (c) { return csvCell(c[0]); }).join(',')];
-    currentRows.forEach(function (r) {
-      lines.push(CSV_COLS.map(function (c) { return csvCell(c[1](r)); }).join(','));
+  /* cols is a list of [header, value-of-row]; label names the file. */
+  function downloadCsv(cols, rows, label) {
+    var lines = [cols.map(function (c) { return csvCell(c[0]); }).join(',')];
+    rows.forEach(function (r) {
+      lines.push(cols.map(function (c) { return csvCell(c[1](r)); }).join(','));
     });
     // BOM so Excel opens UTF-8 correctly.
     var blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
@@ -935,6 +977,13 @@
     var a = document.createElement('a');
     var stamp = new Date().toISOString().slice(0, 10);
     a.href = url;
+    a.download = 'shower-stream-' + label + '-' + stamp + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+  document.getElementById('fCsv').addEventListener('click', function () {
     // Name the file after what was actually exported, not the tab.
     var label = state.status === 'attention' ? 'issue-check'
               : state.status ? state.status.toLowerCase()
@@ -942,11 +991,7 @@
     if (state.property) label = state.property + '-' + label;
     if (state.hb) label += '-' + state.hb.toLowerCase();
     if (state.flag) label += '-' + (state.flag === 'any' ? 'findings' : state.flag.toLowerCase());
-    a.download = 'shower-stream-' + label + '-' + stamp + '.csv';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    downloadCsv(CSV_COLS, currentRows, label);
   });
 
   // ---------------------------------------------------------------- rollup
@@ -1398,7 +1443,7 @@
   /* Sheet findings, counted. They are where the consolidated sheet disagrees
      with itself or with Particle: flagged, never failed on, and never
      corrected here - the sheet stays the source. Each count opens All rooms
-     filtered to the rooms it names; the full worklists come later. */
+     filtered to the rooms it names; the worklists below list them. */
   (function renderFindingsSummary() {
     var roomsWith = function (code) { return ALL_ROOMS.filter(function (r) { return hasFlag(r, code); }).length; };
     var cov = F.f2Coverage || {};
@@ -1423,7 +1468,8 @@
     ];
     document.getElementById('reconFindings').innerHTML = block('Sheet findings', findingTotal,
       'Where the consolidated sheet disagrees with itself or with Particle. Flagged, never failed on, and never '
-      + 'corrected here: the sheet stays the source of truth. Each count opens the rooms it names in All rooms.',
+      + 'corrected here: the sheet stays the source of truth. Each count opens the rooms it names in All rooms; '
+      + 'the lists below take them one room at a time.',
       '<div class="tablewrap"><table><thead><tr><th>Flag</th><th>What it means</th><th>Count</th></tr></thead><tbody>'
       + rows.map(function (x) {
           var n = F[x.code.toLowerCase()] ? F[x.code.toLowerCase()].length : 0;
@@ -1431,10 +1477,308 @@
           return '<tr><td class="rowhead" data-label="Flag"><b>' + x.code + '</b></td>'
             + '<td data-label="What it means">' + x.what + (x.sub ? '<span class="fsub">' + x.sub + '</span>' : '') + '</td>'
             + '<td class="num fcount" data-label="Count"><b>' + n + '</b>'
-            + (rooms ? ' <a href="#" data-goto="rooms" data-flag="' + x.code + '">' + rooms + ' room'
+            + (rooms ? ' <a href="' + esc(roomsHref({ flag: x.code })) + '" data-goto="rooms">' + rooms + ' room'
               + (rooms === 1 ? '' : 's') + ' &rarr;</a>' : '') + '</td></tr>';
         }).join('')
       + '</tbody></table></div>');
+  })();
+
+  // ------------------------------------------------------------- worklists
+  /* The findings, and the Ok rooms the data disagrees with, as lists someone
+     can work through - mainly Priya, fixing the sheet and whatever feeds it.
+     Each has its count, its own CSV, and a link that opens All rooms on the
+     same rooms wherever the existing filters can say which. They sit on
+     Reconciliation, which summary view hides, and read only what the page
+     already carries: the rooms, their flags and the page findings. */
+  var PROPS = {};
+  DATA.properties.forEach(function (p, i) { PROPS[p.code] = { name: p.name, order: i }; });
+  function propName(code) { return PROPS[code] ? PROPS[code].name : ''; }
+  // Property in page order, then room as a person reads it (101 before 1010, 213a after 213).
+  function byPlace(a, b) {
+    var pa = PROPS[a.property] ? PROPS[a.property].order : 99, pb = PROPS[b.property] ? PROPS[b.property].order : 99;
+    return pa - pb || String(a.room).localeCompare(String(b.room), undefined, { numeric: true });
+  }
+  function placeTds(code, room) {
+    return '<td class="rowhead" data-label="Prop"><b>' + esc(code) + '</b> <span class="muted">' + esc(propName(code)) + '</span></td>'
+      + '<td class="num" data-label="Room"><b>' + esc(room) + '</b></td>';
+  }
+  function muted(s) { return '<span class="muted">' + esc(s) + '</span>'; }
+  function toned(s, tone) { return '<span style="color:' + toneVar(tone) + ';font-weight:600">' + esc(s) + '</span>'; }
+
+  /* F4: the backfill list. A finding carries no note (render.js leaves the
+     note on its room row) and the page's rooms carry no sheet row, so each
+     finding takes the first room row it describes - same property, room and
+     DeviceId, tagged F4 - that no earlier finding took. */
+  function f4Items() {
+    var taken = {};
+    function roomFor(f) {
+      for (var i = 0; i < ALL_ROOMS.length; i++) {
+        var r = ALL_ROOMS[i];
+        if (!taken[i] && r.property === f.property && r.room === f.room
+            && (r.deviceId || null) === (f.deviceId || null) && hasFlag(r, 'F4')) {
+          taken[i] = true;
+          return r;
+        }
+      }
+      return null;
+    }
+    return (F.f4 || []).concat(F.f4Unnamed || []).map(function (f, i) {
+      return { property: f.property, room: f.room, f: f, r: roomFor(f), i: i };
+    }).sort(function (a, b) { return byPlace(a, b) || a.i - b.i; });
+  }
+  // What DeviceId shows for the room: Particle's name for the id, or why there is none.
+  function shownDevice(r) {
+    if (!r) return null;
+    if (r.deviceName) return r.deviceName;
+    if (r.deviceId) return '…' + r.deviceId.slice(-6);
+    return hasFlag(r, 'F3') ? 'not a device id' : 'blank';
+  }
+  /* Whether the unit the note names is reporting, as the room list would
+     say it of a room holding that unit. A name Particle does not have, or
+     has on several devices, names no unit to ask about. */
+  function namedState(f) {
+    if (!f.namedUnit) return { html: muted('—'), csv: '' };
+    if (f.reason === 'ambiguous name') {
+      return { html: muted('name not unique in Particle'), csv: 'name not unique in Particle',
+        tip: 'Several Particle devices are named ' + f.namedUnit + ', so the note does not say which one.' };
+    }
+    if (!f.namedDeviceId) {
+      return { html: muted('not in Particle'), csv: 'not in Particle',
+        tip: 'No Particle device is named exactly ' + f.namedUnit + '. Names are matched exactly, never by digits alone.' };
+    }
+    var hb = hbBucketMeta(f.namedHeartbeatBucket);
+    var who = (f.namedDeviceName || f.namedUnit) + ' (…' + String(f.namedDeviceId).slice(-6) + ')';
+    if (f.namedDaysSilent === null || f.namedDaysSilent === undefined) {
+      return { html: toned('never heard', hb.tone), csv: hb.label, tip: who + ': Particle has no heartbeat from it.' };
+    }
+    return { html: toned('heard ' + fmtDays(f.namedDaysSilent) + ' ago', hb.tone), csv: hb.label,
+      tip: who + ' · ' + hb.label + ' · counted from page build time' };
+  }
+  var CELL_WORDS = { formula: 'lookup', typed: 'typed', empty: 'empty' };
+  var CELL_TIPS = {
+    formula: 'DeviceId is the sheet’s lookup formula. It follows the next export, so correct what it looks up: heartbeatstatus, by Location and room.',
+    typed: 'A value typed over the lookup. It never follows an export, so it has to be corrected in the sheet itself.',
+    empty: 'No formula and no value. Nothing fills it until an id is typed in or the lookup is put back.'
+  };
+  function cellHtml(kind) {
+    if (!CELL_WORDS[kind]) return muted('—');
+    var word = kind === 'formula' ? esc(CELL_WORDS[kind]) : '<b>' + esc(CELL_WORDS[kind]) + '</b>';
+    return '<span title="' + esc(CELL_TIPS[kind]) + '">' + word + '</span>';
+  }
+  function f4Text(r) {
+    return flagsOf(r).filter(function (x) { return x.code === 'F4'; }).map(function (x) { return 'F4: ' + x.text; }).join(' | ');
+  }
+
+  /* Marked Ok, but: the sheet says Ok and the data does not. The reasons, in
+     the order the list is worked: no device, never heard, not heard within
+     the stale cutoff, critical battery. Every cutoff is the payload's own -
+     "stale" is the open-ended heartbeat bucket, "critical" the battery class
+     - and each reason is one existing filter, so each can open All rooms. The
+     page never changes a status. */
+  var HBT = TH.heartbeatAge;
+  var STALE = HBT.buckets.filter(function (b) { return b.maxDays === null; })[0] || null;
+  var STALE_AFTER = HBT.buckets.length > 1 ? HBT.buckets[HBT.buckets.length - 2].maxDays : null;
+  var OK_BUT = [
+    { words: 'no device', tone: hbBucketMeta(HBT.noDeviceBucket.key).tone, link: { status: 'Ok', hb: HBT.noDeviceBucket.key },
+      has: function (r) { return r.heartbeatBucket === HBT.noDeviceBucket.key; } },
+    { words: 'never heard', tone: hbBucketMeta(HBT.neverBucket.key).tone, link: { status: 'Ok', hb: HBT.neverBucket.key },
+      has: function (r) { return r.heartbeatBucket === HBT.neverBucket.key; } },
+    { words: STALE_AFTER ? 'not heard in over ' + STALE_AFTER + ' days' : (STALE ? STALE.label : 'stale'),
+      tone: STALE ? STALE.tone : 'bad', link: STALE ? { status: 'Ok', hb: STALE.key } : null,
+      has: function (r) { return Boolean(STALE) && r.heartbeatBucket === STALE.key; } },
+    { words: 'battery critical', tone: BATTERY_TONES.critical, link: { status: 'Ok', battery: 'critical' },
+      has: function (r) { return r.batteryClass === 'critical'; } }
+  ];
+  function okButItems() {
+    var out = [];
+    ALL_ROOMS.forEach(function (r) {
+      if (r.status !== 'Ok') return;
+      var why = OK_BUT.filter(function (w) { return w.has(r); });
+      if (why.length) out.push({ property: r.property, room: r.room, r: r, why: why, rank: OK_BUT.indexOf(why[0]) });
+    });
+    // By first reason, then longest silent (no days at all sorts last), then place.
+    return out.sort(function (a, b) {
+      var da = a.r.daysSilent === null ? -1 : a.r.daysSilent, db = b.r.daysSilent === null ? -1 : b.r.daysSilent;
+      return a.rank - b.rank || db - da || byPlace(a, b);
+    });
+  }
+
+  var LISTS = {};
+  function listHtml(o) {
+    LISTS[o.key] = o;
+    var n = o.items.length;
+    var links = (o.links || []).filter(function (l) { return l[2] > 0; });
+    var bar = !n ? '' : '<div class="listbar">'
+      + (links.length === 1 && links[0][1] === null
+          ? '<a href="' + esc(roomsHref(links[0][0])) + '" data-goto="rooms">Open in All rooms &rarr;</a>'
+          : links.length ? '<span class="muted">Open in All rooms:</span> ' + links.map(function (l) {
+              return '<a href="' + esc(roomsHref(l[0])) + '" data-goto="rooms">' + esc(l[1]) + ' (' + l[2] + ')</a>';
+            }).join(' <span class="muted">&middot;</span> ') : '')
+      + '<button type="button" class="btn" data-csv="' + o.key + '">Download CSV</button></div>';
+    var body = n
+      ? '<div class="tablewrap"><table><thead><tr>' + o.cols.map(function (c) {
+          return '<th' + (c[1] ? ' title="' + esc(c[1]) + '"' : '') + '>' + esc(c[0]) + '</th>';
+        }).join('') + '</tr></thead><tbody>' + o.items.map(o.row).join('') + '</tbody></table></div>'
+      : '<div class="tablewrap"><div class="empty">' + esc(o.empty) + '</div></div>';
+    return '<div class="recon-block" id="list-' + o.key + '"><div class="recon-hd">'
+      + (o.code ? '<span class="flag">' + o.code + '</span>' : '') + '<h2>' + esc(o.title) + '</h2>'
+      + '<span class="n">' + n + '</span><p>' + o.desc + '</p></div>' + bar + body + '</div>';
+  }
+
+  (function renderLists() {
+    var f4 = f4Items();
+    var named = (F.f4 || []).length, unnamed = (F.f4Unnamed || []).length;
+    var okBut = okButItems();
+    var bv = TH.batteryVoltage;
+    var lists = [];
+
+    lists.push(listHtml({
+      key: 'f4', file: 'f4-backfill', code: 'F4', title: 'Replacement not in DeviceId', items: f4,
+      desc: 'A note on the room records a replacement unit that its DeviceId does not show: the backfill list for the sheet. '
+        + '<b>Named unit</b> is that unit as Particle reports it, counted from page build time. <b>Cell</b> says where the fix goes: '
+        + 'a <b>lookup</b> follows the next export, so correct what it looks up; a <b>typed</b> or <b>empty</b> cell never '
+        + 'follows an export and is corrected in the sheet itself.'
+        + (unnamed ? ' ' + named + ' note' + (named === 1 ? ' names' : 's name') + ' a unit; ' + unnamed + ' record'
+          + (unnamed === 1 ? 's' : '') + ' a replacement without naming one.' : ''),
+      links: [[{ flag: 'F4' }, null, f4.length]],
+      empty: 'None today: every replacement a note names shows in DeviceId.',
+      cols: [['Prop'], ['Room'], ['DeviceId shows', 'Particle’s name for the id in DeviceId'], ['Note names'],
+        ['Named unit', 'Whether the unit the note names is reporting to Particle'], ['Cell', 'The DeviceId cell: lookup formula, typed, or empty'],
+        ['Note']],
+      row: function (x) {
+        var shows = shownDevice(x.r);
+        var st = namedState(x.f);
+        return '<tr>' + placeTds(x.f.property, x.f.room)
+          + '<td class="mono" data-label="DeviceId shows">'
+            + (shows === null ? muted('—') : x.r.deviceName || x.r.deviceId ? esc(shows) : muted(shows)) + '</td>'
+          + '<td class="mono" data-label="Note names">' + (x.f.namedUnit ? esc(x.f.namedUnit) : muted('unnamed')) + '</td>'
+          + '<td class="num" data-label="Named unit"' + (st.tip ? ' title="' + esc(st.tip) + '"' : '') + '>' + st.html + '</td>'
+          + '<td data-label="Cell">' + cellHtml(x.f.deviceIdCell) + '</td>'
+          + noteTd(x.r ? x.r.notes : null, 'Note')
+          + '</tr>';
+      },
+      csv: [
+        ['Property', function (x) { return x.f.property; }],
+        ['Property name', function (x) { return propName(x.f.property); }],
+        ['Room', function (x) { return x.f.room; }],
+        ['DeviceId shows', function (x) { return shownDevice(x.r); }],
+        ['DeviceId (Particle ID)', function (x) { return x.r ? x.r.deviceId : x.f.deviceId; }],
+        ['Note names', function (x) { return x.f.namedUnit || 'unnamed'; }],
+        ['Named unit Particle ID', function (x) { return x.f.namedDeviceId; }],
+        ['Named unit heartbeat', function (x) { return namedState(x.f).csv; }],
+        ['Named unit days silent', function (x) { return x.f.namedDaysSilent; }],
+        ['DeviceId cell', function (x) { return CELL_WORDS[x.f.deviceIdCell] || ''; }],
+        ['Finding', function (x) { return f4Text(x.r); }],
+        ['Note', function (x) { return x.r ? x.r.notes : null; }]
+      ]
+    }));
+
+    lists.push(listHtml({
+      key: 'okbut', file: 'ok-but', title: 'Marked Ok, but…', items: okBut,
+      desc: 'Rooms the sheet marks <b>Ok</b> while the data says otherwise: no device in DeviceId, a device Particle has never heard, '
+        + 'one not heard in over ' + esc(STALE_AFTER) + ' days, or a critical battery (below ' + esc(bv.warnAbove) + '&nbsp;V). '
+        + 'A room can have several reasons. The page never changes a status: this is a list for checking the sheet.',
+      links: OK_BUT.filter(function (w) { return w.link; }).map(function (w) {
+        return [w.link, w.words, okBut.filter(function (x) { return x.why.indexOf(w) !== -1; }).length];
+      }),
+      empty: 'None today: every room marked Ok has a device heard within ' + STALE_AFTER + ' days and no critical battery.',
+      cols: [['Prop'], ['Room'], ['Device'], ['Why'], ['Days silent'], ['Battery'], ['Notes']],
+      row: function (x) {
+        var r = x.r;
+        return '<tr>' + placeTds(r.property, r.room)
+          + '<td class="mono" data-label="Device">' + (r.deviceName ? esc(r.deviceName) : muted('—')) + '</td>'
+          + '<td data-label="Why">' + x.why.map(function (w) {
+              return '<span class="why ' + toneClass(w.tone) + '">' + esc(w.words) + '</span>';
+            }).join('') + '</td>'
+          + silentTd(r) + batteryTd(r) + noteTd(r.notes)
+          + '</tr>';
+      },
+      csv: [
+        ['Property', function (x) { return x.r.property; }],
+        ['Property name', function (x) { return x.r.propertyName; }],
+        ['Room', function (x) { return x.r.room; }],
+        ['Device', function (x) { return x.r.deviceName; }],
+        ['Particle ID', function (x) { return x.r.deviceId; }],
+        ['Why', function (x) { return x.why.map(function (w) { return w.words; }).join('; '); }],
+        ['Heartbeat', function (x) { return hbBucketMeta(x.r.heartbeatBucket).label; }],
+        ['Days silent', function (x) { return x.r.daysSilent; }],
+        ['Last heartbeat', function (x) { return x.r.lastHeartbeat; }],
+        ['Battery V', function (x) { return x.r.battery; }],
+        ['Battery class', function (x) { return x.r.batteryClass; }],
+        ['Action item', function (x) { return x.r.actionItem; }],
+        ['Notes', function (x) { return x.r.notes; }]
+      ]
+    }));
+
+    var f1 = F.f1 || [];
+    lists.push(listHtml({
+      key: 'f1', file: 'f1-one-device-two-rooms', code: 'F1', title: 'One device, two rooms', items: f1,
+      desc: 'One device id in the DeviceId of two or more rooms. At most one of them is right.',
+      links: [[{ flag: 'F1' }, null, f1.length]],
+      empty: 'None today: no device is listed in two rooms.',
+      cols: [['Device'], ['Particle ID'], ['Rooms'], ['Across properties']],
+      row: function (x) {
+        return '<tr><td class="rowhead mono" data-label="Device"><b>' + esc(x.deviceName || '…' + x.deviceIdShort) + '</b></td>'
+          + '<td class="mono muted" data-label="Particle ID">' + esc(x.deviceId) + '</td>'
+          + '<td data-label="Rooms">' + x.rooms.map(function (p) { return esc(p.property + '/' + p.room); }).join(' &middot; ') + '</td>'
+          + '<td data-label="Across properties">' + (x.crossProperty ? 'yes' : 'no') + '</td></tr>';
+      },
+      csv: [
+        ['Device', function (x) { return x.deviceName; }],
+        ['Particle ID', function (x) { return x.deviceId; }],
+        ['Rooms', function (x) { return x.rooms.map(function (p) { return p.property + '/' + p.room; }).join('; '); }],
+        ['Across properties', function (x) { return x.crossProperty ? 'yes' : 'no'; }]
+      ]
+    }));
+
+    var f2 = (F.f2 || []).slice().sort(byPlace);
+    lists.push(listHtml({
+      key: 'f2', file: 'f2-location-vs-tag', code: 'F2', title: 'Location vs Particle tag', items: f2,
+      desc: 'A room’s Location disagrees with the property tag its device carries in Particle. F2 can only check devices that '
+        + 'carry a tag; the coverage is in Sheet findings above.',
+      links: [[{ flag: 'F2' }, null, f2.length]],
+      empty: 'None among the devices F2 can check. Where most devices carry no tag it cannot look: see the coverage above.',
+      cols: [['Prop'], ['Room'], ['Device'], ['Particle tag'], ['Tag belongs to']],
+      row: function (x) {
+        return '<tr>' + placeTds(x.property, x.room)
+          + '<td class="mono" data-label="Device">' + esc(x.deviceName || '…' + x.deviceIdShort) + '</td>'
+          + '<td class="mono" data-label="Particle tag">' + esc(x.group) + '</td>'
+          + '<td data-label="Tag belongs to"><b>' + esc(x.tagProperty) + '</b> ' + muted(propName(x.tagProperty)) + '</td></tr>';
+      },
+      csv: [
+        ['Property', function (x) { return x.property; }],
+        ['Property name', function (x) { return propName(x.property); }],
+        ['Room', function (x) { return x.room; }],
+        ['Device', function (x) { return x.deviceName; }],
+        ['Particle ID', function (x) { return x.deviceId; }],
+        ['Particle tag', function (x) { return x.group; }],
+        ['Tag belongs to', function (x) { return x.tagProperty; }]
+      ]
+    }));
+
+    var f3 = (F.f3 || []).slice().sort(byPlace);
+    lists.push(listHtml({
+      key: 'f3', file: 'f3-deviceid-not-usable', code: 'F3', title: 'DeviceId not usable', items: f3,
+      desc: 'DeviceId is not a Particle device id, holds a spreadsheet error, or names a device the Particle product does not '
+        + 'have. These rooms read Never.',
+      links: [[{ flag: 'F3' }, null, f3.length]],
+      empty: 'None today: every DeviceId is blank or the id of a device Particle knows.',
+      cols: [['Prop'], ['Room'], ['Problem'], ['DeviceId holds']],
+      row: function (x) {
+        return '<tr>' + placeTds(x.property, x.room)
+          + '<td data-label="Problem">' + esc(x.reason) + '</td>'
+          + '<td class="mono" data-label="DeviceId holds">' + esc(x.value) + '</td></tr>';
+      },
+      csv: [
+        ['Property', function (x) { return x.property; }],
+        ['Property name', function (x) { return propName(x.property); }],
+        ['Room', function (x) { return x.room; }],
+        ['Problem', function (x) { return x.reason; }],
+        ['DeviceId holds', function (x) { return x.value; }]
+      ]
+    }));
+
+    document.getElementById('reconLists').innerHTML = lists.join('');
   })();
 
   var blocks = '';
@@ -1547,19 +1891,30 @@
     b.addEventListener('click', function () { show(b.dataset.view); });
   });
 
-  // Cards are rendered before show() exists, so delegate rather than bind.
+  // Cards and lists are rendered before show() exists, so delegate rather than bind.
   document.addEventListener('click', function (e) {
+    var c = e.target.closest && e.target.closest('[data-csv]');
+    if (c) {
+      var list = LISTS[c.getAttribute('data-csv')];
+      if (list && list.items.length) downloadCsv(list.csv, list.items, list.file);
+      return;
+    }
     var a = e.target.closest && e.target.closest('[data-goto]');
     if (!a) return;
+    /* A link whose href is a query - a finding count, a worklist's "open in
+       All rooms" - is the address it leads to, filters and all. Opened in a
+       new tab, it is the browser's to follow; clicked, it applies those
+       filters here, replacing any already set, and the address bar shows it. */
+    var href = a.getAttribute('href') || '';
+    var carries = href.charAt(0) === '?';
+    if (carries && (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)) return;
     e.preventDefault();
-    // A finding count opens All rooms showing exactly the rooms it names.
-    var flag = a.getAttribute('data-flag');
-    if (flag) {
-      clearFilters();
-      state.flag = flag;
+    var view = a.getAttribute('data-goto');
+    if (carries) {
+      view = readParams(new URLSearchParams(href.slice(1)));
       syncControlsFromState();
     }
-    show(a.getAttribute('data-goto'));
+    show(view);
   });
 
   var initial = readUrl();
