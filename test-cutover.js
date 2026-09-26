@@ -621,6 +621,26 @@ t('the workbook read keeps formulas: a written .xlsx read back the way normalize
   assert.strictEqual(back.A2.f, undefined);
   assert.strictEqual(keep(back.A3.f), 'IFNA(INDEX(Sheet2!A:A,1),"")');
 });
+t('a cell inside a multi-cell array formula is a formula too, not typed', () => {
+  // SheetJS puts f on the formula's anchor cell and only F (the range) on the
+  // cells it spills into. Today's lookups are single-cell; a range must not
+  // tell Priya a lookup cell is typed.
+  const XLSX = require('xlsx');
+  const hdrs = ['Location', 'Rooms', 'DeviceId', 'Status', 'Action Item', 'Notes', 'Battery Status [x]', 'Calibration Risk'];
+  const ws = XLSX.utils.aoa_to_sheet([['#Rooms to repair'], hdrs, [6178, 101, hex(1), 'Ok'], [6178, 102, hex(2), 'Ok'], [6178, 103, hex(3), 'Ok']]);
+  XLSX.utils.sheet_set_array_formula(ws, 'C3:C4', 'IFNA(INDEX(heartbeatstatus!A:A,1),"")');
+  ws.C3.v = hex(1);
+  ws.C3.t = 's';
+  ws.C4.v = hex(2);
+  ws.C4.t = 's';
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'roomstatus');
+  const back = XLSX.read(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }), { cellDates: false }).Sheets.roomstatus;
+  assert.ok(back.C3.f && !back.C4.f && back.C4.F, 'the trap is real: the spilled cell carries F only');
+  const tab = N.readSheetTab(back, 'roomstatus', 1);
+  assert.deepStrictEqual(keep(N.parseRoomstatusRows(tab.rows, tab.K, tab.deviceIdCells).rows.map((r) => [r.room.display, r.deviceIdCell])),
+    [['101', 'formula'], ['102', 'formula'], ['103', 'typed']]);
+});
 t('F4 findings carry the room’s DeviceId cell kind, unnamed ones too', () => {
   const { byName } = indexDevices([dev(1, 'P2-0001', [], ago(0.1)), dev(2, 'P2-0002', [], ago(0.1))]);
   const rows = [

@@ -487,8 +487,10 @@ function restoreErrorCells(ws, rows, headerRow, header) {
  * sheet's two-key lookup of heartbeatstatus, which follows every re-export),
  * 'typed' (a value typed over it, which never does), or 'empty' (no formula
  * and nothing in it). The workbook is read with SheetJS's default
- * cellFormula, which keeps each formula on its cell. Nothing is inferred
- * from the formula's text: a formula is a formula.
+ * cellFormula, which keeps each formula on its cell: `f` on a formula's own
+ * cell, and only `F` (the range) on the other cells of a multi-cell array
+ * formula, so either one makes a formula. Nothing is inferred from the
+ * formula's text: a formula is a formula.
  */
 function deviceIdCellKinds(ws, rows, headerRow, header) {
   const kinds = new Map();
@@ -498,7 +500,7 @@ function deviceIdCellKinds(ws, rows, headerRow, header) {
     if (!Number.isInteger(r.__rowNum__)) continue;
     const cell = ws[XLSX.utils.encode_cell({ r: r.__rowNum__, c: col })];
     const typed = cell && cell.v !== null && cell.v !== undefined && String(cell.v).trim() !== '';
-    kinds.set(r.__rowNum__, cell && cell.f ? 'formula' : typed ? 'typed' : 'empty');
+    kinds.set(r.__rowNum__, cell && (cell.f || cell.F) ? 'formula' : typed ? 'typed' : 'empty');
   }
   return kinds;
 }
