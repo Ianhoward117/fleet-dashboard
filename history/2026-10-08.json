@@ -1,0 +1,63 @@
+{
+  "date": "2026-10-08",
+  "builtAt": "2026-10-08T17:46:39.201Z",
+  "triageRows": 74,
+  "properties": {
+    "6178": {
+      "rooms": 109,
+      "ok": 95,
+      "issue": 8,
+      "check": 6,
+      "reporting": 107,
+      "silent": 2,
+      "snapshot": "2026-10-05",
+      "battery": {
+        "ok": 82,
+        "warn": 9,
+        "critical": 8,
+        "unclassified": 0,
+        "unknown": 10
+      },
+      "liveUnder2d": 83,
+      "unmappedLive": 0
+    },
+    "6197": {
+      "rooms": 94,
+      "ok": 74,
+      "issue": 16,
+      "check": 4,
+      "reporting": 94,
+      "silent": 0,
+      "snapshot": "2026-10-05",
+      "battery": {
+        "ok": 47,
+        "warn": 9,
+        "critical": 15,
+        "unclassified": 0,
+        "unknown": 23
+      },
+      "liveUnder2d": 46,
+      "unmappedLive": 0
+    },
+    "9502": {
+      "rooms": 116,
+      "ok": 76,
+      "issue": 33,
+      "check": 7,
+      "reporting": 110,
+      "silent": 6,
+      "snapshot": "2026-10-05",
+      "battery": {
+        "ok": 68,
+        "warn": 13,
+        "critical": 21,
+        "unclassified": 0,
+        "unknown": 14
+      },
+      "liveUnder2d": 72,
+      "unmappedLive": 0
+    }
+  },
+  "liveUnder2d": 201,
+  "unmappedLive": 0
+}
